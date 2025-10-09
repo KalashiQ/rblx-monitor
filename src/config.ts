@@ -20,8 +20,10 @@ const parsed = envSchema.safeParse(process.env);
 if (!parsed.success) {
   // Construct readable error
   const formatted = parsed.error.flatten();
-  const missing = Object.keys(formatted.fieldErrors)
-    .map((k) => `${k}: ${formatted.fieldErrors[k]?.join(', ')}`)
+  const entries = Object.entries(formatted.fieldErrors as Record<string, string[] | undefined>);
+  const missing = entries
+    .filter(([, msgs]) => msgs && msgs.length)
+    .map(([key, msgs]) => `${key}: ${msgs?.join(', ')}`)
     .join('; ');
   throw new Error(`Invalid environment configuration: ${missing}`);
 }
