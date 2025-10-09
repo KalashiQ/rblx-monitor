@@ -5,6 +5,7 @@ export type Game = {
   url: string;
   created_at?: number;
   updated_at?: number;
+  ccu?: number; // Current CCU from rotrends
 };
 
 export type Snapshot = {

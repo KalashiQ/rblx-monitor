@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { config } from './config';
 import { initSchema, upsertGame } from './db';
 import { fetchGamesByLetter, fetchGamesByPage, fetchGamesByLetterPage } from './rotrends';
+import { upsertGameWithCcu, insertSnapshot } from './db';
 import { closeBrowser } from './browser';
 
 const logger = pino({ level: config.LOG_LEVEL });
@@ -25,8 +26,14 @@ async function populateByLetters(): Promise<void> {
         await Promise.all(
           pageGames.map((g) =>
             limit(async () => {
-              const id = upsertGame({ source_id: g.source_id, title: g.title, url: g.url });
-              logger.debug({ id, source_id: g.source_id }, 'Upserted game');
+              const { gameId, ccu } = upsertGameWithCcu({ source_id: g.source_id, title: g.title, url: g.url, ccu: g.ccu });
+              logger.debug({ gameId, source_id: g.source_id, ccu }, 'Upserted game');
+              
+              // Если есть CCU, сразу сохраняем снапшот
+              if (ccu !== null) {
+                insertSnapshot({ game_id: gameId, timestamp: Date.now(), ccu });
+                logger.debug({ gameId, ccu }, 'Snapshot saved');
+              }
             })
           )
         );

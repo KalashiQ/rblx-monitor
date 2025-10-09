@@ -86,6 +86,12 @@ export function upsertGame(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>)
   return row.id;
 }
 
+export function upsertGameWithCcu(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): { gameId: number; ccu: number | null } {
+  const gameId = upsertGame(game);
+  const ccu = game.ccu ?? null;
+  return { gameId, ccu };
+}
+
 export function insertSnapshot(snapshot: Omit<Snapshot, 'id'>): number {
   const stmt = db.prepare(
     `INSERT INTO snapshots (game_id, timestamp, ccu) VALUES (@game_id, @timestamp, @ccu)`

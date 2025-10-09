@@ -125,6 +125,7 @@ export async function fetchGamesByLetter(letter: string): Promise<Game[]> {
           source_id: String(g.place_id ?? g.game_id ?? g.id ?? ''),
           title: String(g.game_name ?? g.title ?? ''),
           url: `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
+          ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
         }))
         .filter((g) => g.source_id && g.title && g.url);
       if (mapped.length > 0) return mapped;
@@ -164,6 +165,7 @@ export async function fetchGamesByPage(page: number, pageSize = 50): Promise<Gam
           source_id: String(g.place_id ?? g.game_id ?? g.id ?? ''),
           title: String(g.game_name ?? g.title ?? ''),
           url: `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
+          ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
         }))
         .filter((g) => g.source_id && g.title && g.url);
       if (mapped.length > 0) return mapped;
@@ -208,6 +210,7 @@ export async function fetchGamesByLetterPage(
           source_id: String(g.place_id ?? g.game_id ?? g.id ?? ''),
           title: String(g.game_name ?? g.title ?? ''),
           url: `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
+          ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
         }))
         .filter((g) => g.source_id && g.title && g.url);
       if (mapped.length > 0) return mapped;
