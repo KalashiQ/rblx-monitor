@@ -1,10 +1,13 @@
 import 'dotenv/config';
 import pino from 'pino';
+import { config } from './config';
+import { initSchema } from './db';
 
-const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+const logger = pino({ level: config.LOG_LEVEL });
 
 async function main(): Promise<void> {
-  logger.info({ env: process.env.NODE_ENV }, 'Roblox monitor started');
+  initSchema();
+  logger.info({ env: config.NODE_ENV }, 'Roblox monitor started');
 }
 
 main().catch((error) => {
