@@ -102,6 +102,46 @@ export function upsertGame(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>)
   }
 }
 
+export function upsertGameWithStatus(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): { gameId: number; isNew: boolean } {
+  const now = Date.now();
+  
+  // Сначала проверяем, существует ли игра
+  const existing = db.prepare('SELECT id FROM games WHERE source_id = ?').get(game.source_id) as {
+    id: number;
+  } | undefined;
+  
+  if (existing) {
+    // Обновляем существующую игру
+    const update = db.prepare(
+      `UPDATE games SET title=@title, url=@url, updated_at=@updated_at WHERE source_id=@source_id`
+    );
+    update.run({
+      source_id: game.source_id,
+      title: game.title,
+      url: game.url,
+      updated_at: now,
+    });
+    return { gameId: existing.id, isNew: false };
+  } else {
+    // Вставляем новую игру
+    const insert = db.prepare(
+      `INSERT INTO games (source_id, title, url, created_at, updated_at)
+       VALUES (@source_id, @title, @url, @created_at, @updated_at)`
+    );
+    const info = insert.run({
+      source_id: game.source_id,
+      title: game.title,
+      url: game.url,
+      created_at: now,
+      updated_at: now,
+    });
+    if (info.lastInsertRowid && typeof info.lastInsertRowid === 'number') {
+      return { gameId: info.lastInsertRowid, isNew: true };
+    }
+    throw new Error('Failed to insert game');
+  }
+}
+
 export function upsertGameWithCcu(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): { gameId: number; ccu: number | null } {
   const gameId = upsertGame(game);
   const ccu = game.ccu ?? null;
