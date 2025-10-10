@@ -5,8 +5,8 @@ const envSchema = z.object({
   POLL_INTERVAL_MS: z.coerce.number().int().positive(),
   ANOMALY_N_SIGMA: z.coerce.number().positive(),
   MIN_POINTS_IN_WINDOW: z.coerce.number().int().positive(),
-  TELEGRAM_BOT_TOKEN: z.string().min(1),
-  TELEGRAM_CHAT_ID: z.string().min(1),
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_CHAT_ID: z.string().optional(),
   CONCURRENCY: z.coerce.number().int().positive(),
   REQUEST_TIMEOUT_MS: z.coerce.number().int().positive(),
   RETRY_ATTEMPTS: z.coerce.number().int().nonnegative(),
@@ -31,6 +31,8 @@ if (!parsed.success) {
 export type AppConfig = z.infer<typeof envSchema> & {
   LOG_LEVEL: NonNullable<z.infer<typeof envSchema>['LOG_LEVEL']>;
   NODE_ENV: NonNullable<z.infer<typeof envSchema>['NODE_ENV']>;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_CHAT_ID?: string;
 };
 
 // Fill defaults for optional fields ensured above

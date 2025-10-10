@@ -64,26 +64,42 @@ export function initSchema(): void {
 // DAO
 export function upsertGame(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): number {
   const now = Date.now();
-  const insert = db.prepare(
-    `INSERT INTO games (source_id, title, url, created_at, updated_at)
-     VALUES (@source_id, @title, @url, @created_at, @updated_at)
-     ON CONFLICT(source_id) DO UPDATE SET title=excluded.title, url=excluded.url, updated_at=excluded.updated_at`
-  );
-  const info = insert.run({
-    source_id: game.source_id,
-    title: game.title,
-    url: game.url,
-    created_at: now,
-    updated_at: now,
-  });
-  if (info.lastInsertRowid && typeof info.lastInsertRowid === 'number') {
-    return info.lastInsertRowid;
-  }
-  const row = db.prepare('SELECT id FROM games WHERE source_id = ?').get(game.source_id) as {
+  
+  // Сначала проверяем, существует ли игра
+  const existing = db.prepare('SELECT id FROM games WHERE source_id = ?').get(game.source_id) as {
     id: number;
   } | undefined;
-  if (!row) throw new Error('Failed to upsert game');
-  return row.id;
+  
+  if (existing) {
+    // Обновляем существующую игру
+    const update = db.prepare(
+      `UPDATE games SET title=@title, url=@url, updated_at=@updated_at WHERE source_id=@source_id`
+    );
+    update.run({
+      source_id: game.source_id,
+      title: game.title,
+      url: game.url,
+      updated_at: now,
+    });
+    return existing.id;
+  } else {
+    // Вставляем новую игру
+    const insert = db.prepare(
+      `INSERT INTO games (source_id, title, url, created_at, updated_at)
+       VALUES (@source_id, @title, @url, @created_at, @updated_at)`
+    );
+    const info = insert.run({
+      source_id: game.source_id,
+      title: game.title,
+      url: game.url,
+      created_at: now,
+      updated_at: now,
+    });
+    if (info.lastInsertRowid && typeof info.lastInsertRowid === 'number') {
+      return info.lastInsertRowid;
+    }
+    throw new Error('Failed to insert game');
+  }
 }
 
 export function upsertGameWithCcu(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): { gameId: number; ccu: number | null } {
@@ -118,6 +134,13 @@ export function insertAnomaly(anomaly: Omit<Anomaly, 'id' | 'notified'> & { noti
 
 export function markAnomalyNotified(id: number): void {
   db.prepare(`UPDATE anomalies SET notified = 1 WHERE id = ?`).run(id);
+}
+
+export function clearTables(): void {
+  // Очищаем таблицы в правильном порядке (сначала зависимые, потом основные)
+  db.prepare('DELETE FROM anomalies').run();
+  db.prepare('DELETE FROM snapshots').run();
+  db.prepare('DELETE FROM games').run();
 }
 
 

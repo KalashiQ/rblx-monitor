@@ -70,26 +70,27 @@ async function waitForGamesJson(
   }
 }
 
-async function captureNetworkDebug(page: import('playwright').Page, key: string): Promise<void> {
-  const debugDir = path.resolve(process.cwd(), 'debug');
-  if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
-  page.on('response', async (resp) => {
-    try {
-      const url = resp.url();
-      const ct = resp.headers()['content-type'] || '';
-      if (/json/i.test(ct) && /(api|games|search|list)/i.test(url)) {
-        const body = await resp.text();
-        const out = path.join(debugDir, `${key}_network.json`);
-        await fs.promises.writeFile(out, body, 'utf-8');
-        logger.debug({ url, out }, 'Saved network JSON');
-      }
-    } catch {}
-  });
-}
+// Debug function disabled to prevent debug file creation
+// async function captureNetworkDebug(page: import('playwright').Page, key: string): Promise<void> {
+//   const debugDir = path.resolve(process.cwd(), 'debug');
+//   if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
+//   page.on('response', async (resp) => {
+//     try {
+//       const url = resp.url();
+//       const ct = resp.headers()['content-type'] || '';
+//       if (/json/i.test(ct) && /(api|games|search|list)/i.test(url)) {
+//         const body = await resp.text();
+//         const out = path.join(debugDir, `${key}_network.json`);
+//         await fs.promises.writeFile(out, body, 'utf-8');
+//         logger.debug({ url, out }, 'Saved network JSON');
+//       }
+//     } catch {}
+//   });
+// }
 
 async function extractGamesFromDom(page: import('playwright').Page): Promise<Game[]> {
   // Достаём игры прямо из DOM после выполнения JS на странице
-  const items = await page.$$eval('a[href^="/games/"]', (anchors) => {
+  const items = await page.$$eval('a[href^="/games/"], a[href^="/game/"]', (anchors) => {
     return anchors.map((a) => {
       const href = (a as HTMLAnchorElement).getAttribute('href') || '';
       const titleAttr = (a as HTMLAnchorElement).getAttribute('title') || '';
@@ -111,7 +112,7 @@ export async function fetchGamesByLetter(letter: string): Promise<Game[]> {
   const page = await newPage();
   try {
     logger.debug({ url, type: 'letter', letter }, 'Navigating to rotrends');
-    await captureNetworkDebug(page, `letter_${letter}`);
+    // await captureNetworkDebug(page, `letter_${letter}`);
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     const navUrl = page.url();
     const title = await page.title();
@@ -119,29 +120,49 @@ export async function fetchGamesByLetter(letter: string): Promise<Game[]> {
     // Try to consume JSON from XHR
     const json = await waitForGamesJson(page);
     if (json && typeof json === 'object' && (json as any).data?.games) {
-      const items = (json as any).data.games as any[];
-      const mapped: Game[] = items
-        .map((g) => ({
-          source_id: String(g.place_id ?? g.game_id ?? g.id ?? ''),
-          title: String(g.game_name ?? g.title ?? ''),
-          url: `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
-          ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
-        }))
-        .filter((g) => g.source_id && g.title && g.url);
-      if (mapped.length > 0) return mapped;
+      // Ждём появления ссылок на игры в DOM
+      await page.waitForSelector('a[href^="/games/"], a[href^="/game/"]', { timeout: 5000 }).catch(() => {});
+      // Сначала попробуем извлечь полные ссылки из DOM
+      const domGames = await extractGamesFromDom(page);
+      logger.debug({ domGamesCount: domGames.length }, 'Extracted games from DOM');
+      if (domGames.length > 0) {
+        // Сопоставляем данные из JSON с полными ссылками из DOM
+        const items = (json as any).data.games as any[];
+        const mapped: Game[] = items
+          .map((g) => {
+            const gameId = String(g.place_id ?? g.game_id ?? g.id ?? '');
+            // Ищем соответствующую игру в DOM по game_id (не place_id)
+            const domGame = domGames.find(dg => dg.source_id === String(g.game_id ?? g.id ?? ''));
+            return {
+              source_id: gameId,
+              title: String(g.game_name ?? g.title ?? ''),
+              url: domGame?.url || `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
+              ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
+            };
+          })
+          .filter((g) => g.source_id && g.title && g.url);
+        if (mapped.length > 0) return mapped;
+      } else {
+        // Fallback к старой логике если DOM игры не найдены
+        const items = (json as any).data.games as any[];
+        const mapped: Game[] = items
+          .map((g) => ({
+            source_id: String(g.place_id ?? g.game_id ?? g.id ?? ''),
+            title: String(g.game_name ?? g.title ?? ''),
+            url: `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
+            ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
+          }))
+          .filter((g) => g.source_id && g.title && g.url);
+        if (mapped.length > 0) return mapped;
+      }
     }
     // Ждём появления ссылок на игры (если данные подгружаются XHR)
-    await page.waitForSelector('a[href^="/games/"]', { timeout: 5000 }).catch(() => {});
+    await page.waitForSelector('a[href^="/games/"], a[href^="/game/"]', { timeout: 5000 }).catch(() => {});
     const content = await page.content();
     logger.debug({ url, navUrl, title, htmlLength: content.length }, 'Loaded rotrends page');
     const games = (await extractGamesFromDom(page)).length ? await extractGamesFromDom(page) : parseGamesFromHtml(content);
     if (games.length === 0) {
-      const debugDir = path.resolve(process.cwd(), 'debug');
-      if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
-      const htmlPath = path.join(debugDir, `letter_${letter}.html`);
-      await fs.promises.writeFile(htmlPath, content, 'utf-8');
-      try { await page.screenshot({ path: path.join(debugDir, `letter_${letter}.png`), fullPage: true }); } catch {}
-      logger.warn({ url, navUrl, title, htmlPath }, 'No games parsed, saved debug dump');
+      logger.warn({ url, navUrl, title }, 'No games parsed');
     }
     return games;
   } finally {
@@ -154,21 +175,46 @@ export async function fetchGamesByPage(page: number, pageSize = 50): Promise<Gam
   const p = await newPage();
   try {
     logger.debug({ url, type: 'page', page, pageSize }, 'Navigating to rotrends');
-    await captureNetworkDebug(p, `page_${page}`);
+    // await captureNetworkDebug(p, `page_${page}`);
     await p.goto(url, { waitUntil: 'domcontentloaded' });
     await p.waitForTimeout(1200);
     const json = await waitForGamesJson(p);
     if (json && typeof json === 'object' && (json as any).data?.games) {
-      const items = (json as any).data.games as any[];
-      const mapped: Game[] = items
-        .map((g) => ({
-          source_id: String(g.place_id ?? g.game_id ?? g.id ?? ''),
-          title: String(g.game_name ?? g.title ?? ''),
-          url: `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
-          ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
-        }))
-        .filter((g) => g.source_id && g.title && g.url);
-      if (mapped.length > 0) return mapped;
+      // Ждём появления ссылок на игры в DOM
+      await p.waitForSelector('a[href^="/games/"], a[href^="/game/"]', { timeout: 5000 }).catch(() => {});
+      // Сначала попробуем извлечь полные ссылки из DOM
+      const domGames = await extractGamesFromDom(p);
+      logger.debug({ domGamesCount: domGames.length }, 'Extracted games from DOM');
+      if (domGames.length > 0) {
+        // Сопоставляем данные из JSON с полными ссылками из DOM
+        const items = (json as any).data.games as any[];
+        const mapped: Game[] = items
+          .map((g) => {
+            const gameId = String(g.place_id ?? g.game_id ?? g.id ?? '');
+            // Ищем соответствующую игру в DOM по game_id (не place_id)
+            const domGame = domGames.find(dg => dg.source_id === String(g.game_id ?? g.id ?? ''));
+            return {
+              source_id: gameId,
+              title: String(g.game_name ?? g.title ?? ''),
+              url: domGame?.url || `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
+              ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
+            };
+          })
+          .filter((g) => g.source_id && g.title && g.url);
+        if (mapped.length > 0) return mapped;
+      } else {
+        // Fallback к старой логике если DOM игры не найдены
+        const items = (json as any).data.games as any[];
+        const mapped: Game[] = items
+          .map((g) => ({
+            source_id: String(g.place_id ?? g.game_id ?? g.id ?? ''),
+            title: String(g.game_name ?? g.title ?? ''),
+            url: `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
+            ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
+          }))
+          .filter((g) => g.source_id && g.title && g.url);
+        if (mapped.length > 0) return mapped;
+      }
     }
     await p.waitForSelector('a[href^="/games/"]', { timeout: 5000 }).catch(() => {});
     const content = await p.content();
@@ -177,12 +223,7 @@ export async function fetchGamesByPage(page: number, pageSize = 50): Promise<Gam
     logger.debug({ url, navUrl, title, htmlLength: content.length }, 'Loaded rotrends page');
     const games = (await extractGamesFromDom(p)).length ? await extractGamesFromDom(p) : parseGamesFromHtml(content);
     if (games.length === 0) {
-      const debugDir = path.resolve(process.cwd(), 'debug');
-      if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
-      const htmlPath = path.join(debugDir, `page_${page}.html`);
-      await fs.promises.writeFile(htmlPath, content, 'utf-8');
-      try { await p.screenshot({ path: path.join(debugDir, `page_${page}.png`), fullPage: true }); } catch {}
-      logger.warn({ url, navUrl, title, htmlPath }, 'No games parsed, saved debug dump');
+      logger.warn({ url, navUrl, title }, 'No games parsed');
     }
     return games;
   } finally {
@@ -199,21 +240,46 @@ export async function fetchGamesByLetterPage(
   const p = await newPage();
   try {
     logger.debug({ url, type: 'letter_page', letter, page, pageSize }, 'Navigating to rotrends');
-    await captureNetworkDebug(p, `letter_${letter}_page_${page}`);
+    // await captureNetworkDebug(p, `letter_${letter}_page_${page}`);
     await p.goto(url, { waitUntil: 'domcontentloaded' });
     await p.waitForTimeout(1200);
     const json = await waitForGamesJson(p);
     if (json && typeof json === 'object' && (json as any).data?.games) {
-      const items = (json as any).data.games as any[];
-      const mapped: Game[] = items
-        .map((g) => ({
-          source_id: String(g.place_id ?? g.game_id ?? g.id ?? ''),
-          title: String(g.game_name ?? g.title ?? ''),
-          url: `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
-          ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
-        }))
-        .filter((g) => g.source_id && g.title && g.url);
-      if (mapped.length > 0) return mapped;
+      // Ждём появления ссылок на игры в DOM
+      await p.waitForSelector('a[href^="/games/"], a[href^="/game/"]', { timeout: 5000 }).catch(() => {});
+      // Сначала попробуем извлечь полные ссылки из DOM
+      const domGames = await extractGamesFromDom(p);
+      logger.debug({ domGamesCount: domGames.length }, 'Extracted games from DOM');
+      if (domGames.length > 0) {
+        // Сопоставляем данные из JSON с полными ссылками из DOM
+        const items = (json as any).data.games as any[];
+        const mapped: Game[] = items
+          .map((g) => {
+            const gameId = String(g.place_id ?? g.game_id ?? g.id ?? '');
+            // Ищем соответствующую игру в DOM по game_id (не place_id)
+            const domGame = domGames.find(dg => dg.source_id === String(g.game_id ?? g.id ?? ''));
+            return {
+              source_id: gameId,
+              title: String(g.game_name ?? g.title ?? ''),
+              url: domGame?.url || `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
+              ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
+            };
+          })
+          .filter((g) => g.source_id && g.title && g.url);
+        if (mapped.length > 0) return mapped;
+      } else {
+        // Fallback к старой логике если DOM игры не найдены
+        const items = (json as any).data.games as any[];
+        const mapped: Game[] = items
+          .map((g) => ({
+            source_id: String(g.place_id ?? g.game_id ?? g.id ?? ''),
+            title: String(g.game_name ?? g.title ?? ''),
+            url: `https://rotrends.com/games/${g.game_id ?? g.id ?? ''}`,
+            ccu: typeof g.playing === 'number' ? g.playing : typeof g.ccu === 'number' ? g.ccu : undefined,
+          }))
+          .filter((g) => g.source_id && g.title && g.url);
+        if (mapped.length > 0) return mapped;
+      }
     }
     await p.waitForSelector('a[href^="/games/"]', { timeout: 5000 }).catch(() => {});
     const content = await p.content();
@@ -222,14 +288,7 @@ export async function fetchGamesByLetterPage(
     logger.debug({ url, navUrl, title, htmlLength: content.length }, 'Loaded rotrends page');
     const games = (await extractGamesFromDom(p)).length ? await extractGamesFromDom(p) : parseGamesFromHtml(content);
     if (games.length === 0) {
-      const debugDir = path.resolve(process.cwd(), 'debug');
-      if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
-      const htmlPath = path.join(debugDir, `letter_${letter}_page_${page}.html`);
-      await fs.promises.writeFile(htmlPath, content, 'utf-8');
-      try {
-        await p.screenshot({ path: path.join(debugDir, `letter_${letter}_page_${page}.png`), fullPage: true });
-      } catch {}
-      logger.warn({ url, navUrl, title, htmlPath }, 'No games parsed, saved debug dump');
+      logger.warn({ url, navUrl, title }, 'No games parsed');
     }
     return games;
   } finally {
