@@ -108,12 +108,9 @@ export class TelegramBot {
       console.log('📨 Sending results...');
       await ctx.reply(
         `✅ Парсинг завершен!\n\n` +
-        `📊 Результаты:\n` +
-        `• Обработано игр: ${result.totalGames}\n` +
-        `• Новых игр: ${result.newGames}\n` +
-        `• Обновлено игр: ${result.updatedGames}\n` +
-        `• Ошибок: ${result.errors}\n` +
-        `• Всего в базе: ${result.realGameCount}`,
+        `🆕 Новых игр: ${result.newGames}\n` +
+        `📊 Всего в базе: ${result.realGameCount}\n` +
+        `❌ Ошибок: ${result.errors}`,
         this.getMainKeyboard()
       );
       console.log('✅ Results sent successfully');
