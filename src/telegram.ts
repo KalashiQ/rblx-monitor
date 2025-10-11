@@ -2,11 +2,29 @@ import { Telegraf, Markup } from 'telegraf';
 import { config } from './config';
 import { parseNewGames } from './populate';
 import { db } from './db';
+import { startCircularParsingForDuration } from './roblox-parser';
 import * as fs from 'fs';
 import * as path from 'path';
 
 export class TelegramBot {
   private bot: Telegraf;
+  private isParsingActive: boolean = false;
+  private parsingStartTime: number = 0;
+  private parsingStats: {
+    totalProcessed: number;
+    successfulParses: number;
+    failedParses: number;
+    lastGameTitle: string;
+    completedCycles: number;
+    lastGameIndex: number;
+  } = {
+    totalProcessed: 0,
+    successfulParses: 0,
+    failedParses: 0,
+    lastGameTitle: '',
+    completedCycles: 0,
+    lastGameIndex: -1
+  };
 
   constructor() {
     console.log('🤖 Creating TelegramBot instance...');
@@ -41,9 +59,23 @@ export class TelegramBot {
         '🚨 Запустить поиск аномалий - найти аномальные игры\n' +
         '⚙️ Настройки - настройки бота\n' +
         '📤 Экспорт файла базы данных - скачать базу данных\n\n' +
+        '📊 /status - показать статус парсинга\n' +
+        '🛑 /stop_parsing - остановить парсинг аномалий\n\n' +
         'Используйте кнопки ниже для навигации.',
         this.getMainKeyboard()
       );
+    });
+
+    // Команда /stop_parsing
+    this.bot.command('stop_parsing', (ctx) => {
+      console.log('🛑 stop_parsing command received');
+      this.handleStopParsing(ctx);
+    });
+
+    // Команда /status
+    this.bot.command('status', (ctx) => {
+      console.log('📊 status command received');
+      this.handleStatus(ctx);
     });
 
     // Обработчики кнопок
@@ -66,6 +98,10 @@ export class TelegramBot {
     this.bot.action('back_to_main', (ctx) => {
       console.log('🏠 back_to_main action triggered');
       this.handleBackToMain(ctx);
+    });
+    this.bot.action('cancel_parsing', (ctx) => {
+      console.log('🛑 cancel_parsing action triggered');
+      this.handleStopParsing(ctx);
     });
 
     // Обработка ошибок
@@ -129,15 +165,158 @@ export class TelegramBot {
 
   private async handleFindAnomalies(ctx: any) {
     try {
-      await ctx.answerCbQuery('🚨 Поиск аномалий...');
+      await ctx.answerCbQuery('🚨 Запуск поиска аномалий...', { show_alert: false });
     } catch (cbError) {
       console.log('⚠️ Callback query already answered or expired, continuing...');
     }
-    await ctx.reply(
-      '🚨 Функция поиска аномалий пока не реализована.\n\n' +
-      'Эта функция будет добавлена в следующих версиях.',
-      this.getMainKeyboard()
-    );
+    
+    // Проверяем, не запущен ли уже парсинг
+    if (this.isParsingActive) {
+      await ctx.reply(
+        '⚠️ Парсинг уже запущен!\n\n' +
+        '🔄 Круговой парсинг онлайна игр уже работает.\n' +
+        '🛑 Для остановки используйте команду /stop_parsing',
+        this.getMainKeyboard()
+      );
+      return;
+    }
+    
+    try {
+      // Устанавливаем флаг активного парсинга и сбрасываем статистику
+      this.isParsingActive = true;
+      this.parsingStartTime = Date.now();
+      this.parsingStats = {
+        totalProcessed: 0,
+        successfulParses: 0,
+        failedParses: 0,
+        lastGameTitle: '',
+        completedCycles: 0,
+        lastGameIndex: -1
+      };
+      
+      // Создаем клавиатуру с кнопкой отмены
+      const parsingKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('🛑 Остановить парсинг', 'cancel_parsing')]
+      ]);
+      
+      // Отправляем сообщение о начале процесса
+      await ctx.reply(
+        '🚨 Запуск поиска аномалий...\n\n' +
+        '🔄 Начинаем круговой парсинг онлайна игр с официального сайта Roblox.\n' +
+        '⏳ Парсинг будет работать круглосуточно до остановки.\n\n' +
+        '🛑 Для остановки нажмите кнопку ниже или используйте команду /stop_parsing',
+        parsingKeyboard
+      );
+
+      // Запускаем круговой парсинг на 24 часа (86400000 мс) - практически бесконечно
+      const durationMs = 24 * 60 * 60 * 1000; // 24 часа
+      let progressMessage: any = null;
+      let lastUpdateTime = 0;
+      
+      const result = await startCircularParsingForDuration(
+        durationMs,
+        (current, total, gameTitle, successfulParses, failedParses) => {
+          // Проверяем, не остановлен ли парсинг
+          if (!this.isParsingActive) {
+            return;
+          }
+          
+          // Обновляем статистику
+          this.parsingStats.totalProcessed = current;
+          this.parsingStats.lastGameTitle = gameTitle;
+          this.parsingStats.successfulParses = successfulParses;
+          this.parsingStats.failedParses = failedParses;
+          
+          // Если вернулись к первой игре (current === 1) и предыдущая игра была последней в списке
+          if (current === 1 && this.parsingStats.lastGameIndex === total) {
+            this.parsingStats.completedCycles++;
+          }
+          
+          // Сохраняем текущий индекс игры
+          this.parsingStats.lastGameIndex = current;
+          
+          const now = Date.now();
+          const elapsedTime = now - this.parsingStartTime;
+          const elapsedMinutes = Math.floor(elapsedTime / 60000);
+          
+          // Обновляем прогресс каждые 5 игр или каждые 10 секунд
+          if (current % 5 === 0 || current === 1 || now - lastUpdateTime > 10000) {
+            lastUpdateTime = now;
+            
+            const progressText = `🚨 Поиск аномалий (КРУГЛОСУТОЧНО)...\n\n` +
+              `🔄 Обработано игр: ${current}/${total}\n` +
+              `🎮 Текущая игра: ${gameTitle}\n` +
+              `⏱️ Время работы: ${elapsedMinutes} мин\n` +
+              `🔄 Завершено кругов: ${this.parsingStats.completedCycles}\n` +
+              `📊 Успешно: ${this.parsingStats.successfulParses} | Ошибок: ${this.parsingStats.failedParses}\n` +
+              `⏳ Парсинг продолжается...\n\n` +
+              `🛑 Для остановки: /stop_parsing`;
+            
+            const progressKeyboard = Markup.inlineKeyboard([
+              [Markup.button.callback('🛑 Остановить парсинг', 'cancel_parsing')]
+            ]);
+            
+            if (progressMessage) {
+              try {
+                ctx.telegram.editMessageText(
+                  ctx.chat!.id,
+                  progressMessage.message_id,
+                  undefined,
+                  progressText,
+                  { reply_markup: progressKeyboard.reply_markup }
+                );
+              } catch (editError) {
+                console.log('⚠️ Could not update progress message:', editError);
+              }
+            } else {
+              // Создаем первое сообщение о прогрессе
+              ctx.telegram.sendMessage(
+                ctx.chat!.id,
+                progressText,
+                { reply_markup: progressKeyboard.reply_markup }
+              ).then((msg: any) => {
+                progressMessage = msg;
+              }).catch((err: any) => {
+                console.log('⚠️ Could not send progress message:', err);
+              });
+            }
+          }
+        },
+        () => !this.isParsingActive  // Callback для проверки остановки
+      );
+
+      // Сбрасываем флаг активного парсинга
+      this.isParsingActive = false;
+
+      // Отправляем финальные результаты
+      await ctx.reply(
+        `✅ Поиск аномалий завершен!\n\n` +
+        `📊 Статистика:\n` +
+        `🎮 Всего игр: ${result.totalGames}\n` +
+        `✅ Успешно обработано: ${result.successfulParses}\n` +
+        `❌ Ошибок: ${result.failedParses}\n` +
+        `🔄 Полных циклов: ${result.totalCycles}\n` +
+        `⏱️ Среднее время на игру: ${result.averageTimePerGame}мс\n` +
+        `📈 Снапшоты сохранены в базу данных\n\n` +
+        `🔍 Теперь можно анализировать данные на предмет аномалий.`,
+        this.getMainKeyboard()
+      );
+
+      console.log('✅ Anomaly search completed:', result);
+      
+    } catch (error) {
+      // Сбрасываем флаг активного парсинга при ошибке
+      this.isParsingActive = false;
+      console.error('❌ Anomaly search error:', error);
+      try {
+        await ctx.reply(
+          '❌ Ошибка при поиске аномалий. Проверьте логи для подробностей.',
+          this.getMainKeyboard()
+        );
+      } catch (replyError) {
+        console.error('❌ Failed to send error message:', replyError);
+      }
+    }
   }
 
   private async handleSettings(ctx: any) {
@@ -236,6 +415,85 @@ export class TelegramBot {
       try {
         await ctx.reply(
           '❌ Ошибка при экспорте базы данных. Проверьте логи для подробностей.',
+          this.getMainKeyboard()
+        );
+      } catch (replyError) {
+        console.error('❌ Failed to send error message:', replyError);
+      }
+    }
+  }
+
+  private async handleStatus(ctx: any) {
+    try {
+      const now = Date.now();
+      const elapsedTime = this.parsingStartTime > 0 ? now - this.parsingStartTime : 0;
+      const elapsedMinutes = Math.floor(elapsedTime / 60000);
+      const elapsedHours = Math.floor(elapsedMinutes / 60);
+      
+      if (!this.isParsingActive) {
+        await ctx.reply(
+          '📊 Статус парсинга\n\n' +
+          '🔴 Парсинг не активен\n\n' +
+          '🚨 Для запуска используйте кнопку "Запустить поиск аномалий"',
+          this.getMainKeyboard()
+        );
+        return;
+      }
+
+      const statusText = `📊 Статус парсинга\n\n` +
+        `🟢 Парсинг активен\n` +
+        `⏱️ Время работы: ${elapsedHours}ч ${elapsedMinutes % 60}м\n` +
+        `🔄 Обработано игр: ${this.parsingStats.totalProcessed}\n` +
+        `🔄 Завершено кругов: ${this.parsingStats.completedCycles}\n` +
+        `📊 Успешно: ${this.parsingStats.successfulParses} | Ошибок: ${this.parsingStats.failedParses}\n` +
+        `🎮 Последняя игра: ${this.parsingStats.lastGameTitle}\n\n` +
+        `🛑 Для остановки: /stop_parsing`;
+      
+      await ctx.reply(statusText, this.getMainKeyboard());
+      
+    } catch (error) {
+      console.error('❌ Status error:', error);
+      try {
+        await ctx.reply(
+          '❌ Ошибка при получении статуса. Проверьте логи для подробностей.',
+          this.getMainKeyboard()
+        );
+      } catch (replyError) {
+        console.error('❌ Failed to send error message:', replyError);
+      }
+    }
+  }
+
+  private async handleStopParsing(ctx: any) {
+    try {
+      if (!this.isParsingActive) {
+        await ctx.reply(
+          '⚠️ Парсинг не запущен!\n\n' +
+          '🔄 В данный момент круговой парсинг не активен.\n' +
+          '🚨 Для запуска используйте кнопку "Запустить поиск аномалий"',
+          this.getMainKeyboard()
+        );
+        return;
+      }
+
+      // Останавливаем парсинг
+      this.isParsingActive = false;
+      
+      await ctx.reply(
+        '🛑 Парсинг остановлен!\n\n' +
+        '✅ Круговой парсинг онлайна игр был остановлен.\n' +
+        `🔄 Завершено кругов: ${this.parsingStats.completedCycles}\n` +
+        '📊 Все собранные данные сохранены в базу данных.\n\n' +
+        '🚨 Для повторного запуска используйте кнопку "Запустить поиск аномалий"',
+        this.getMainKeyboard()
+      );
+      
+      console.log('🛑 Parsing stopped by user command');
+    } catch (error) {
+      console.error('❌ Stop parsing error:', error);
+      try {
+        await ctx.reply(
+          '❌ Ошибка при остановке парсинга. Проверьте логи для подробностей.',
           this.getMainKeyboard()
         );
       } catch (replyError) {

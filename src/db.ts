@@ -31,7 +31,10 @@ export function initSchema(): void {
     id INTEGER PRIMARY KEY,
     game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
     timestamp INTEGER NOT NULL,
-    ccu INTEGER NOT NULL
+    ccu INTEGER NOT NULL,
+    roblox_url TEXT,
+    game_title TEXT,
+    readable_time TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_snapshots_game_time ON snapshots(game_id, timestamp);
