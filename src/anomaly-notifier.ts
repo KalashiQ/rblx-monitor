@@ -1,6 +1,7 @@
 import pino from 'pino';
 import { config } from './config';
 import { getUnnotifiedAnomalies, markAnomalyAsNotified } from './anomaly-detector';
+import { getAnomalySettings } from './db';
 import type { Anomaly } from './types';
 
 const logger = pino({ level: config.LOG_LEVEL });
@@ -8,7 +9,29 @@ const logger = pino({ level: config.LOG_LEVEL });
 /**
  * Форматирует сообщение об аномалии
  */
-function formatAnomalyMessage(anomaly: Anomaly & { game_title: string; game_url: string }): string {
+export function formatAnomalyMessage(anomaly: Anomaly & { game_title: string; game_url: string }): string {
+  const settings = getAnomalySettings();
+  
+  // Если есть кастомное сообщение, используем его с подстановкой переменных
+  if (settings.custom_message) {
+    const direction = anomaly.direction === 'up' ? '📈 РОСТ' : '📉 ПАДЕНИЕ';
+    const deltaSign = anomaly.delta > 0 ? '+' : '';
+    const nSigma = config.ANOMALY_N_SIGMA;
+    
+    return settings.custom_message
+      .replace(/\{game_title\}/g, anomaly.game_title)
+      .replace(/\{direction\}/g, direction)
+      .replace(/\{delta\}/g, `${deltaSign}${Math.round(anomaly.delta)}`)
+      .replace(/\{n_sigma\}/g, nSigma.toString())
+      .replace(/\{threshold\}/g, Math.round(anomaly.threshold).toString())
+      .replace(/\{current_online\}/g, Math.round(anomaly.mean + anomaly.delta).toString())
+      .replace(/\{mean\}/g, Math.round(anomaly.mean).toString())
+      .replace(/\{stddev\}/g, Math.round(anomaly.stddev).toString())
+      .replace(/\{game_url\}/g, anomaly.game_url)
+      .replace(/\{timestamp\}/g, new Date(anomaly.timestamp).toLocaleString('ru-RU'));
+  }
+  
+  // Стандартное сообщение
   const direction = anomaly.direction === 'up' ? '📈 РОСТ' : '📉 ПАДЕНИЕ';
   const deltaSign = anomaly.delta > 0 ? '+' : '';
   const nSigma = config.ANOMALY_N_SIGMA;

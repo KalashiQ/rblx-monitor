@@ -1,7 +1,7 @@
 import { Telegraf, Markup } from 'telegraf';
 import { config } from './config';
 import { parseNewGames } from './populate';
-import { db, getAnomalySettings, updateAnomalySettings } from './db';
+import { db, getAnomalySettings, updateAnomalySettings, updateCustomMessage } from './db';
 import { startCircularParsingForDuration } from './roblox-parser';
 import { sendTestNotification } from './anomaly-notifier';
 import * as fs from 'fs';
@@ -13,6 +13,7 @@ export class TelegramBot {
   private parsingStartTime: number = 0;
   private waitingForNSigma: boolean = false;
   private waitingForMinDelta: boolean = false;
+  private waitingForCustomMessage: boolean = false;
   private parsingStats: {
     totalProcessed: number;
     successfulParses: number;
@@ -122,6 +123,10 @@ export class TelegramBot {
       console.log('👥 settings_min_delta action triggered');
       this.handleSettingsMinDelta(ctx);
     });
+    this.bot.action('settings_custom_message', (ctx) => {
+      console.log('💬 settings_custom_message action triggered');
+      this.handleSettingsCustomMessage(ctx);
+    });
 
     // Обработка текстовых сообщений для настроек
     this.bot.on('text', async (ctx) => {
@@ -168,6 +173,53 @@ export class TelegramBot {
         );
         
         this.waitingForMinDelta = false;
+        return;
+      }
+      
+      if (this.waitingForCustomMessage) {
+        const text = ctx.message.text;
+        
+        // Проверяем, не является ли это командой отмены
+        if (text.toLowerCase() === 'отмена' || text.toLowerCase() === 'cancel') {
+          await ctx.reply('❌ Настройка кастомного сообщения отменена');
+          this.waitingForCustomMessage = false;
+          return;
+        }
+        
+        // Проверяем, не является ли это командой сброса
+        if (text.toLowerCase() === 'сброс' || text.toLowerCase() === 'reset') {
+          updateCustomMessage(null);
+          await ctx.reply(
+            '✅ Кастомное сообщение сброшено!\n\n' +
+            '🔄 Теперь будут использоваться стандартные уведомления.',
+            this.getMainKeyboard()
+          );
+          this.waitingForCustomMessage = false;
+          return;
+        }
+        
+        // Сохраняем кастомное сообщение
+        updateCustomMessage(text);
+        
+        await ctx.reply(
+          `✅ Кастомное сообщение обновлено!\n\n` +
+          `📝 Новое сообщение:\n${text}\n\n` +
+          `💡 Доступные переменные:\n` +
+          `• {game_title} - название игры\n` +
+          `• {direction} - направление (📈 РОСТ/📉 ПАДЕНИЕ)\n` +
+          `• {delta} - изменение онлайна\n` +
+          `• {n_sigma} - значение Nσ\n` +
+          `• {threshold} - пороговое значение\n` +
+          `• {current_online} - текущий онлайн\n` +
+          `• {mean} - среднее значение\n` +
+          `• {stddev} - стандартное отклонение\n` +
+          `• {game_url} - ссылка на игру\n` +
+          `• {timestamp} - время обнаружения\n\n` +
+          `🔄 Для сброса к стандартному сообщению отправьте "сброс"`,
+          this.getMainKeyboard()
+        );
+        
+        this.waitingForCustomMessage = false;
         return;
       }
     });
@@ -399,15 +451,20 @@ export class TelegramBot {
     // Получаем текущие настройки
     const settings = getAnomalySettings();
     
+    const customMessagePreview = settings.custom_message 
+      ? `\n• Кастомное сообщение: ${settings.custom_message.length > 50 ? settings.custom_message.substring(0, 50) + '...' : settings.custom_message}`
+      : '\n• Кастомное сообщение: не настроено';
+    
     await ctx.reply(
       '⚙️ Настройки аномалий\n\n' +
       `📊 Текущие настройки:\n` +
       `• Nσ (статистический порог): ${settings.n_sigma}\n` +
-      `• Минимальное изменение: ${settings.min_delta_threshold} игроков\n\n` +
+      `• Минимальное изменение: ${settings.min_delta_threshold} игроков${customMessagePreview}\n\n` +
       'Выберите параметр для изменения:',
       Markup.inlineKeyboard([
         [Markup.button.callback(`📊 Nσ (${settings.n_sigma})`, 'settings_n_sigma')],
         [Markup.button.callback(`👥 Мин. изменение (${settings.min_delta_threshold})`, 'settings_min_delta')],
+        [Markup.button.callback('💬 Кастомное сообщение', 'settings_custom_message')],
         [Markup.button.callback('🔙 Назад', 'back_to_main')]
       ])
     );
@@ -724,6 +781,41 @@ export class TelegramBot {
     // Устанавливаем флаг ожидания ввода минимального изменения
     this.waitingForMinDelta = true;
     this.waitingForNSigma = false;
+  }
+
+  private async handleSettingsCustomMessage(ctx: any) {
+    try {
+      await ctx.answerCbQuery('💬 Настройка кастомного сообщения');
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    const settings = getAnomalySettings();
+    
+    await ctx.reply(
+      `💬 Настройка кастомного сообщения\n\n` +
+      `📝 Текущее сообщение:\n${settings.custom_message || 'Стандартное сообщение'}\n\n` +
+      `💡 Доступные переменные для подстановки:\n` +
+      `• {game_title} - название игры\n` +
+      `• {direction} - направление (📈 РОСТ/📉 ПАДЕНИЕ)\n` +
+      `• {delta} - изменение онлайна\n` +
+      `• {n_sigma} - значение Nσ\n` +
+      `• {threshold} - пороговое значение\n` +
+      `• {current_online} - текущий онлайн\n` +
+      `• {mean} - среднее значение\n` +
+      `• {stddev} - стандартное отклонение\n` +
+      `• {game_url} - ссылка на игру\n` +
+      `• {timestamp} - время обнаружения\n\n` +
+      `📝 Введите новое сообщение (или "сброс" для возврата к стандартному):`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+      ])
+    );
+    
+    // Устанавливаем флаг ожидания ввода кастомного сообщения
+    this.waitingForCustomMessage = true;
+    this.waitingForNSigma = false;
+    this.waitingForMinDelta = false;
   }
 
   public async start() {

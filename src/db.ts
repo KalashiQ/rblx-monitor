@@ -59,6 +59,7 @@ export function initSchema(): void {
     id INTEGER PRIMARY KEY DEFAULT 1,
     n_sigma REAL NOT NULL DEFAULT 3.0,
     min_delta_threshold INTEGER NOT NULL DEFAULT 10,
+    custom_message TEXT,
     updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
   );
 
@@ -198,13 +199,13 @@ export function clearTables(): void {
 }
 
 // Функции для работы с настройками аномалий
-export function getAnomalySettings(): { n_sigma: number; min_delta_threshold: number } {
-  const stmt = db.prepare('SELECT n_sigma, min_delta_threshold FROM anomaly_settings WHERE id = 1');
-  const result = stmt.get() as { n_sigma: number; min_delta_threshold: number } | undefined;
+export function getAnomalySettings(): { n_sigma: number; min_delta_threshold: number; custom_message: string | null } {
+  const stmt = db.prepare('SELECT n_sigma, min_delta_threshold, custom_message FROM anomaly_settings WHERE id = 1');
+  const result = stmt.get() as { n_sigma: number; min_delta_threshold: number; custom_message: string | null } | undefined;
   
   if (!result) {
     // Возвращаем настройки по умолчанию
-    return { n_sigma: 3.0, min_delta_threshold: 10 };
+    return { n_sigma: 3.0, min_delta_threshold: 10, custom_message: null };
   }
   
   return result;
@@ -217,6 +218,15 @@ export function updateAnomalySettings(nSigma: number, minDeltaThreshold: number)
     WHERE id = 1
   `);
   stmt.run(nSigma, minDeltaThreshold, Date.now());
+}
+
+export function updateCustomMessage(customMessage: string | null): void {
+  const stmt = db.prepare(`
+    UPDATE anomaly_settings 
+    SET custom_message = ?, updated_at = ?
+    WHERE id = 1
+  `);
+  stmt.run(customMessage, Date.now());
 }
 
 
