@@ -229,4 +229,58 @@ export function updateCustomMessage(customMessage: string | null): void {
   stmt.run(customMessage, Date.now());
 }
 
+/**
+ * Очищает старые снапшоты (старше указанного количества дней)
+ */
+export function cleanupOldSnapshots(daysToKeep: number = 3): { deletedCount: number } {
+  const cutoffTime = Date.now() - (daysToKeep * 24 * 60 * 60 * 1000);
+  
+  // Получаем количество записей для удаления
+  const countStmt = db.prepare('SELECT COUNT(*) as count FROM snapshots WHERE timestamp < ?');
+  const countResult = countStmt.get(cutoffTime) as { count: number };
+  const deletedCount = countResult.count;
+  
+  // Удаляем старые снапшоты
+  const deleteStmt = db.prepare('DELETE FROM snapshots WHERE timestamp < ?');
+  deleteStmt.run(cutoffTime);
+  
+  return { deletedCount };
+}
+
+/**
+ * Очищает старые аномалии (старше указанного количества дней)
+ */
+export function cleanupOldAnomalies(daysToKeep: number = 30): { deletedCount: number } {
+  const cutoffTime = Date.now() - (daysToKeep * 24 * 60 * 60 * 1000);
+  
+  // Получаем количество записей для удаления
+  const countStmt = db.prepare('SELECT COUNT(*) as count FROM anomalies WHERE timestamp < ?');
+  const countResult = countStmt.get(cutoffTime) as { count: number };
+  const deletedCount = countResult.count;
+  
+  // Удаляем старые аномалии
+  const deleteStmt = db.prepare('DELETE FROM anomalies WHERE timestamp < ?');
+  deleteStmt.run(cutoffTime);
+  
+  return { deletedCount };
+}
+
+/**
+ * Выполняет полную очистку старых данных
+ */
+export function performDataCleanup(): { 
+  snapshotsDeleted: number; 
+  anomaliesDeleted: number; 
+  totalDeleted: number;
+} {
+  const snapshotsResult = cleanupOldSnapshots(3); // 3 дня для снапшотов
+  const anomaliesResult = cleanupOldAnomalies(30); // 30 дней для аномалий
+  
+  return {
+    snapshotsDeleted: snapshotsResult.deletedCount,
+    anomaliesDeleted: anomaliesResult.deletedCount,
+    totalDeleted: snapshotsResult.deletedCount + anomaliesResult.deletedCount
+  };
+}
+
 

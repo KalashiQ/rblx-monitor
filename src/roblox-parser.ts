@@ -2,7 +2,7 @@ import { load } from 'cheerio';
 import { newPage } from './browser';
 import pino from 'pino';
 import { config } from './config';
-import { db } from './db';
+import { db, performDataCleanup } from './db';
 import { analyzeGameForAnomalies, saveAnomaly } from './anomaly-detector';
 import { sendAnomalyNotifications } from './anomaly-notifier';
 
@@ -363,6 +363,8 @@ export async function startCircularParsingForDuration(
   const startTime = Date.now();
   let currentIndex = 0;
   let gameStartTime = 0;
+  let lastCleanupTime = Date.now();
+  const CLEANUP_INTERVAL = 6 * 60 * 60 * 1000; // Очистка каждые 6 часов
   
   while (Date.now() - startTime < durationMs) {
     // Проверяем, не нужно ли остановить парсинг
@@ -448,6 +450,23 @@ export async function startCircularParsingForDuration(
     // Подсчитываем время обработки игры
     const gameProcessingTime = Date.now() - gameStartTime;
     totalProcessingTime += gameProcessingTime;
+    
+    // Проверяем, нужно ли выполнить очистку старых данных
+    const now = Date.now();
+    if (now - lastCleanupTime >= CLEANUP_INTERVAL) {
+      try {
+        logger.info('Выполняем автоматическую очистку старых данных...');
+        const cleanupResult = performDataCleanup();
+        logger.info({ 
+          snapshotsDeleted: cleanupResult.snapshotsDeleted,
+          anomaliesDeleted: cleanupResult.anomaliesDeleted,
+          totalDeleted: cleanupResult.totalDeleted
+        }, 'Очистка данных завершена');
+        lastCleanupTime = now;
+      } catch (cleanupError) {
+        logger.error({ error: (cleanupError as Error).message }, 'Ошибка при очистке данных');
+      }
+    }
     
     // Переходим к следующей игре
     currentIndex = (currentIndex + 1) % totalGames;

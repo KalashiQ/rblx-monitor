@@ -1,7 +1,7 @@
 import { Telegraf, Markup } from 'telegraf';
 import { config } from './config';
 import { parseNewGames } from './populate';
-import { db, getAnomalySettings, updateAnomalySettings, updateCustomMessage } from './db';
+import { db, getAnomalySettings, updateAnomalySettings, updateCustomMessage, performDataCleanup } from './db';
 import { startCircularParsingForDuration } from './roblox-parser';
 import { sendTestNotification } from './anomaly-notifier';
 import * as fs from 'fs';
@@ -10,6 +10,7 @@ import * as path from 'path';
 export class TelegramBot {
   private bot: Telegraf;
   private isParsingActive: boolean = false;
+  private isGameParsingActive: boolean = false;
   private parsingStartTime: number = 0;
   private waitingForNSigma: boolean = false;
   private waitingForMinDelta: boolean = false;
@@ -50,8 +51,9 @@ export class TelegramBot {
       console.log('👋 /start command received');
       ctx.reply(
         '🤖 Добро пожаловать в Roblox Monitor Bot!\n\n' +
-        'Этот бот поможет вам отслеживать аномалии в играх Roblox.',
-        this.getMainKeyboard()
+        'Этот бот поможет вам отслеживать аномалии в играх Roblox.\n\n' +
+        '📱 Используйте кнопки ниже для навигации:',
+        this.getPersistentKeyboard()
       );
     });
 
@@ -62,12 +64,13 @@ export class TelegramBot {
         '🔍 Парсинг новых игр - запустить парсинг новых игр с Roblox\n' +
         '🚨 Запустить поиск аномалий - круглосуточный парсинг с анализом аномалий\n' +
         '⚙️ Настройки - настройки бота\n' +
-        '📤 Экспорт файла базы данных - скачать базу данных\n\n' +
+        '🗄️ База данных - управление базой данных\n\n' +
         '📊 /status - показать статус парсинга\n' +
         '🛑 /stop_parsing - остановить парсинг аномалий\n' +
-        '🧪 /test_notification - тестовое уведомление\n\n' +
-        'Используйте кнопки ниже для навигации.',
-        this.getMainKeyboard()
+        '🧪 /test_notification - тестовое уведомление\n' +
+        '⌨️ /keyboard - показать постоянную клавиатуру\n\n' +
+        '📱 Используйте постоянные кнопки ниже для быстрого доступа к функциям.',
+        this.getPersistentKeyboard()
       );
     });
 
@@ -88,6 +91,48 @@ export class TelegramBot {
     this.bot.command('test_notification', (ctx) => {
       console.log('🧪 test_notification command received');
       this.handleTestNotification(ctx);
+    });
+
+    // Команда /keyboard
+    this.bot.command('keyboard', (ctx) => {
+      console.log('⌨️ keyboard command received');
+      ctx.reply(
+        '⌨️ Показана постоянная клавиатура\n\n' +
+        '📱 Используйте кнопки ниже для навигации:',
+        this.getPersistentKeyboard()
+      );
+    });
+
+    // Команды для настроек
+    this.bot.command('settings_n_sigma', (ctx) => {
+      console.log('📊 settings_n_sigma command received');
+      this.handleSettingsNSigma(ctx);
+    });
+
+    this.bot.command('settings_min_delta', (ctx) => {
+      console.log('👥 settings_min_delta command received');
+      this.handleSettingsMinDelta(ctx);
+    });
+
+    this.bot.command('settings_custom_message', (ctx) => {
+      console.log('💬 settings_custom_message command received');
+      this.handleSettingsCustomMessage(ctx);
+    });
+
+    // Команды для базы данных
+    this.bot.command('export_db', (ctx) => {
+      console.log('📤 export_db command received');
+      this.handleExportDb(ctx);
+    });
+
+    this.bot.command('cleanup_data', (ctx) => {
+      console.log('🧹 cleanup_data command received');
+      this.handleCleanupData(ctx);
+    });
+
+    this.bot.command('db_stats', (ctx) => {
+      console.log('📊 db_stats command received');
+      this.handleDatabaseStats(ctx);
     });
 
     // Обработчики кнопок
@@ -127,9 +172,65 @@ export class TelegramBot {
       console.log('💬 settings_custom_message action triggered');
       this.handleSettingsCustomMessage(ctx);
     });
+    this.bot.action('cleanup_data', (ctx) => {
+      console.log('🧹 cleanup_data action triggered');
+      this.handleCleanupData(ctx);
+    });
+    this.bot.action('database_menu', (ctx) => {
+      console.log('🗄️ database_menu action triggered');
+      this.handleDatabaseMenu(ctx);
+    });
+    this.bot.action('db_stats', (ctx) => {
+      console.log('📊 db_stats action triggered');
+      this.handleDatabaseStats(ctx);
+    });
+    this.bot.action('cancel_game_parsing', (ctx) => {
+      console.log('🛑 cancel_game_parsing action triggered');
+      this.handleCancelGameParsing(ctx);
+    });
 
-    // Обработка текстовых сообщений для настроек
+    // Обработка текстовых сообщений для настроек и постоянной клавиатуры
     this.bot.on('text', async (ctx) => {
+      const text = ctx.message.text;
+      
+      // Обработка команд постоянной клавиатуры
+      if (text === '🔍 Парсинг игр') {
+        console.log('🔍 Parse games from persistent keyboard');
+        this.handleParseGames(ctx);
+        return;
+      }
+      
+      if (text === '🚨 Поиск аномалий') {
+        console.log('🚨 Find anomalies from persistent keyboard');
+        this.handleFindAnomalies(ctx);
+        return;
+      }
+      
+      if (text === '⚙️ Настройки') {
+        console.log('⚙️ Settings from persistent keyboard');
+        this.handleSettings(ctx);
+        return;
+      }
+      
+      if (text === '🗄️ База данных') {
+        console.log('🗄️ Database menu from persistent keyboard');
+        this.handleDatabaseMenu(ctx);
+        return;
+      }
+      
+      if (text === '📊 Статус') {
+        console.log('📊 Status from persistent keyboard');
+        this.handleStatus(ctx);
+        return;
+      }
+      
+      if (text === '❌ Скрыть клавиатуру') {
+        console.log('❌ Hide keyboard from persistent keyboard');
+        ctx.reply('⌨️ Клавиатура скрыта. Для показа используйте /start или /keyboard', 
+          Markup.removeKeyboard());
+        return;
+      }
+      
       if (this.waitingForNSigma) {
         const text = ctx.message.text;
         const nSigma = parseFloat(text);
@@ -146,7 +247,10 @@ export class TelegramBot {
           `✅ Nσ обновлен на ${nSigma}\n\n` +
           `Новые настройки:\n` +
           `• Nσ: ${nSigma}\n` +
-          `• Мин. изменение: ${settings.min_delta_threshold}`
+          `• Мин. изменение: ${settings.min_delta_threshold}`,
+          Markup.inlineKeyboard([
+            [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+          ])
         );
         
         this.waitingForNSigma = false;
@@ -169,7 +273,10 @@ export class TelegramBot {
           `✅ Минимальное изменение обновлено на ${minDelta}\n\n` +
           `Новые настройки:\n` +
           `• Nσ: ${settings.n_sigma}\n` +
-          `• Мин. изменение: ${minDelta}`
+          `• Мин. изменение: ${minDelta}`,
+          Markup.inlineKeyboard([
+            [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+          ])
         );
         
         this.waitingForMinDelta = false;
@@ -181,7 +288,12 @@ export class TelegramBot {
         
         // Проверяем, не является ли это командой отмены
         if (text.toLowerCase() === 'отмена' || text.toLowerCase() === 'cancel') {
-          await ctx.reply('❌ Настройка кастомного сообщения отменена');
+          await ctx.reply(
+            '❌ Настройка кастомного сообщения отменена',
+            Markup.inlineKeyboard([
+              [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+            ])
+          );
           this.waitingForCustomMessage = false;
           return;
         }
@@ -192,7 +304,9 @@ export class TelegramBot {
           await ctx.reply(
             '✅ Кастомное сообщение сброшено!\n\n' +
             '🔄 Теперь будут использоваться стандартные уведомления.',
-            this.getMainKeyboard()
+            Markup.inlineKeyboard([
+              [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+            ])
           );
           this.waitingForCustomMessage = false;
           return;
@@ -216,7 +330,9 @@ export class TelegramBot {
           `• {game_url} - ссылка на игру\n` +
           `• {timestamp} - время обнаружения\n\n` +
           `🔄 Для сброса к стандартному сообщению отправьте "сброс"`,
-          this.getMainKeyboard()
+          Markup.inlineKeyboard([
+            [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+          ])
         );
         
         this.waitingForCustomMessage = false;
@@ -236,47 +352,146 @@ export class TelegramBot {
       [Markup.button.callback('🔍 Парсинг новых игр', 'parse_games')],
       [Markup.button.callback('🚨 Запустить поиск аномалий', 'find_anomalies')],
       [Markup.button.callback('⚙️ Настройки', 'settings')],
-      [Markup.button.callback('📤 Экспорт файла базы данных', 'export_db')]
+      [Markup.button.callback('🗄️ База данных', 'database_menu')]
     ]);
+  }
+
+  private getPersistentKeyboard() {
+    return Markup.keyboard([
+      ['🔍 Парсинг игр', '🚨 Поиск аномалий'],
+      ['⚙️ Настройки', '🗄️ База данных'],
+      ['📊 Статус', '❌ Скрыть клавиатуру']
+    ]).resize().persistent();
   }
 
   private async handleParseGames(ctx: any) {
     console.log('🔍 Parse games button clicked');
+    
+    // Проверяем, не запущен ли уже парсинг игр
+    if (this.isGameParsingActive) {
+      // Проверяем, это callback query или текстовое сообщение
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(
+          '⚠️ Парсинг игр уже запущен!\n\n' +
+          '🔄 Парсинг новых игр уже работает.\n' +
+          '🛑 Для остановки используйте кнопку "Отменить парсинг"',
+          { reply_markup: Markup.inlineKeyboard([
+            [Markup.button.callback('🛑 Отменить парсинг', 'cancel_game_parsing')],
+            [Markup.button.callback('🔙 Назад', 'back_to_main')]
+          ]).reply_markup }
+        );
+      } else {
+        await ctx.reply(
+          '⚠️ Парсинг игр уже запущен!\n\n' +
+          '🔄 Парсинг новых игр уже работает.\n' +
+          '🛑 Для остановки используйте кнопку ниже.',
+          Markup.inlineKeyboard([
+            [Markup.button.callback('🛑 Отменить парсинг', 'cancel_game_parsing')]
+          ])
+        );
+      }
+      return;
+    }
+    
     try {
       // Отвечаем на callback query только если это возможно
-      try {
-        console.log('📤 Answering callback query...');
-        await ctx.answerCbQuery('🔄 Начинаем парсинг...', { show_alert: false });
-      } catch (cbError) {
-        console.log('⚠️ Callback query already answered or expired, continuing...');
+      if (ctx.callbackQuery) {
+        try {
+          console.log('📤 Answering callback query...');
+          await ctx.answerCbQuery('🔄 Начинаем парсинг...', { show_alert: false });
+        } catch (cbError) {
+          console.log('⚠️ Callback query already answered or expired, continuing...');
+        }
       }
       
-      // Отправляем новое сообщение вместо редактирования
-      console.log('📝 Sending new message...');
-      await ctx.reply('🔄 Парсинг новых игр...\n\n⏳ Это может занять несколько минут.');
+      // Устанавливаем флаг активного парсинга игр
+      this.isGameParsingActive = true;
+      
+      // Отправляем сообщение в зависимости от типа
+      if (ctx.callbackQuery) {
+        console.log('📝 Editing message...');
+        await ctx.editMessageText(
+          '🔄 Парсинг новых игр...\n\n⏳ Это может занять несколько минут.\n\n🛑 Для отмены используйте кнопку ниже.',
+          { reply_markup: Markup.inlineKeyboard([
+            [Markup.button.callback('🛑 Отменить парсинг', 'cancel_game_parsing')]
+          ]).reply_markup }
+        );
+      } else {
+        console.log('📝 Sending message...');
+        await ctx.reply(
+          '🔄 Парсинг новых игр...\n\n⏳ Это может занять несколько минут.\n\n🛑 Для отмены используйте кнопку ниже.',
+          Markup.inlineKeyboard([
+            [Markup.button.callback('🛑 Отменить парсинг', 'cancel_game_parsing')]
+          ])
+        );
+      }
 
       // Запускаем парсинг в фоне
       console.log('🚀 Starting parseNewGames...');
-      const result = await parseNewGames();
-      console.log('✅ Parse completed:', result);
       
-      // Отправляем новое сообщение с результатами
-      console.log('📨 Sending results...');
-      await ctx.reply(
-        `✅ Парсинг завершен!\n\n` +
-        `🆕 Новых игр: ${result.newGames}\n` +
-        `📊 Всего в базе: ${result.realGameCount}\n` +
-        `❌ Ошибок: ${result.errors}`,
-        this.getMainKeyboard()
-      );
-      console.log('✅ Results sent successfully');
+      try {
+        const result = await parseNewGames();
+        console.log('✅ Parse completed:', result);
+        
+        // Проверяем, не был ли парсинг остановлен пользователем
+        if (!this.isGameParsingActive) {
+          console.log('🛑 Parsing was stopped by user, not sending completion message');
+          return;
+        }
+        
+        // Сбрасываем флаг активного парсинга
+        this.isGameParsingActive = false;
+        
+        // Отправляем результаты в зависимости от типа
+        if (ctx.callbackQuery) {
+          console.log('📨 Editing results...');
+          await ctx.editMessageText(
+            `✅ Парсинг завершен!\n\n` +
+            `🆕 Новых игр: ${result.newGames}\n` +
+            `📊 Всего в базе: ${result.realGameCount}\n` +
+            `❌ Ошибок: ${result.errors}`,
+            { reply_markup: this.getMainKeyboard().reply_markup }
+          );
+        } else {
+          console.log('📨 Sending results...');
+          await ctx.reply(
+            `✅ Парсинг завершен!\n\n` +
+            `🆕 Новых игр: ${result.newGames}\n` +
+            `📊 Всего в базе: ${result.realGameCount}\n` +
+            `❌ Ошибок: ${result.errors}`,
+            this.getPersistentKeyboard()
+          );
+        }
+        console.log('✅ Results sent successfully');
+      } catch (parseError) {
+        // Сбрасываем флаг активного парсинга при ошибке
+        this.isGameParsingActive = false;
+        console.error('❌ Parse error:', parseError);
+        
+        // Проверяем, не был ли парсинг остановлен пользователем
+        if (!this.isGameParsingActive) {
+          console.log('🛑 Parsing was stopped by user, not sending error message');
+          return;
+        }
+        
+        throw parseError; // Перебрасываем ошибку для обработки в catch блоке
+      }
     } catch (error) {
+      // Сбрасываем флаг активного парсинга при ошибке
+      this.isGameParsingActive = false;
       console.error('❌ Parse games error:', error);
       try {
-        await ctx.reply(
-          '❌ Ошибка при парсинге игр. Проверьте логи для подробностей.',
-          this.getMainKeyboard()
-        );
+        if (ctx.callbackQuery) {
+          await ctx.editMessageText(
+            '❌ Ошибка при парсинге игр. Проверьте логи для подробностей.',
+            { reply_markup: this.getMainKeyboard().reply_markup }
+          );
+        } else {
+          await ctx.reply(
+            '❌ Ошибка при парсинге игр. Проверьте логи для подробностей.',
+            this.getPersistentKeyboard()
+          );
+        }
       } catch (replyError) {
         console.error('❌ Failed to send error message:', replyError);
       }
@@ -285,19 +500,30 @@ export class TelegramBot {
 
   private async handleFindAnomalies(ctx: any) {
     try {
-      await ctx.answerCbQuery('🚨 Запуск поиска аномалий...', { show_alert: false });
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery('🚨 Запуск поиска аномалий...', { show_alert: false });
+      }
     } catch (cbError) {
       console.log('⚠️ Callback query already answered or expired, continuing...');
     }
     
     // Проверяем, не запущен ли уже парсинг
     if (this.isParsingActive) {
-      await ctx.reply(
-        '⚠️ Парсинг уже запущен!\n\n' +
-        '🔄 Круговой парсинг онлайна игр уже работает.\n' +
-        '🛑 Для остановки используйте команду /stop_parsing',
-        this.getMainKeyboard()
-      );
+      if (ctx.callbackQuery) {
+        await ctx.reply(
+          '⚠️ Парсинг уже запущен!\n\n' +
+          '🔄 Круговой парсинг онлайна игр уже работает.\n' +
+          '🛑 Для остановки используйте команду /stop_parsing',
+          this.getMainKeyboard()
+        );
+      } else {
+        await ctx.reply(
+          '⚠️ Парсинг уже запущен!\n\n' +
+          '🔄 Круговой парсинг онлайна игр уже работает.\n' +
+          '🛑 Для остановки используйте кнопку "Остановить парсинг"',
+          this.getPersistentKeyboard()
+        );
+      }
       return;
     }
     
@@ -370,8 +596,7 @@ export class TelegramBot {
               `⏱️ Время работы: ${elapsedMinutes} мин\n` +
               `🔄 Завершено кругов: ${this.parsingStats.completedCycles}\n` +
               `📊 Успешно: ${this.parsingStats.successfulParses} | Ошибок: ${this.parsingStats.failedParses}\n` +
-              `⏳ Парсинг продолжается...\n\n` +
-              `🛑 Для остановки: /stop_parsing`;
+              `⏳ Парсинг продолжается...`;
             
             const progressKeyboard = Markup.inlineKeyboard([
               [Markup.button.callback('🛑 Остановить парсинг', 'cancel_parsing')]
@@ -410,19 +635,19 @@ export class TelegramBot {
       this.isParsingActive = false;
 
       // Отправляем объединенные результаты
-      await ctx.reply(
-        `🛑 Парсинг остановлен!\n\n` +
-        `✅ Круговой парсинг онлайна игр был остановлен.\n` +
-        `🔄 Завершено кругов: ${result.totalCycles}\n` +
-        `📊 Все собранные данные сохранены в базу данных.\n\n` +
-        `📊 Статистика:\n` +
-        `🎮 Всего игр: ${result.totalGames}\n` +
-        `✅ Успешно обработано: ${result.successfulParses}\n` +
-        `❌ Ошибок: ${result.failedParses}\n` +
-        `⏱️ Среднее время на игру: ${result.averageTimePerGame}мс\n\n` +
-        `🚨 Для повторного запуска используйте кнопку "Запустить поиск аномалий"`,
-        this.getMainKeyboard()
-      );
+       await ctx.reply(
+         `🛑 Парсинг остановлен!\n\n` +
+         `✅ Круговой парсинг онлайна игр был остановлен.\n` +
+         `🔄 Завершено кругов: ${result.totalCycles}\n` +
+         `📊 Все собранные данные сохранены в базу данных.\n\n` +
+         `📊 Статистика:\n` +
+         `🎮 Всего игр: ${result.totalGames}\n` +
+         `✅ Успешно обработано: ${result.successfulParses}\n` +
+         `❌ Ошибок: ${result.failedParses}\n` +
+         `⏱️ Среднее время на игру: ${result.averageTimePerGame}мс\n\n` +
+         `🚨 Для повторного запуска используйте кнопку "Поиск аномалий"`,
+         this.getPersistentKeyboard()
+       );
 
       console.log('✅ Anomaly search completed:', result);
       
@@ -433,7 +658,7 @@ export class TelegramBot {
       try {
         await ctx.reply(
           '❌ Ошибка при поиске аномалий. Проверьте логи для подробностей.',
-          this.getMainKeyboard()
+          this.getPersistentKeyboard()
         );
       } catch (replyError) {
         console.error('❌ Failed to send error message:', replyError);
@@ -455,19 +680,33 @@ export class TelegramBot {
       ? `\n• Кастомное сообщение: ${settings.custom_message.length > 50 ? settings.custom_message.substring(0, 50) + '...' : settings.custom_message}`
       : '\n• Кастомное сообщение: не настроено';
     
-    await ctx.reply(
-      '⚙️ Настройки аномалий\n\n' +
-      `📊 Текущие настройки:\n` +
-      `• Nσ (статистический порог): ${settings.n_sigma}\n` +
-      `• Минимальное изменение: ${settings.min_delta_threshold} игроков${customMessagePreview}\n\n` +
-      'Выберите параметр для изменения:',
-      Markup.inlineKeyboard([
-        [Markup.button.callback(`📊 Nσ (${settings.n_sigma})`, 'settings_n_sigma')],
-        [Markup.button.callback(`👥 Мин. изменение (${settings.min_delta_threshold})`, 'settings_min_delta')],
-        [Markup.button.callback('💬 Кастомное сообщение', 'settings_custom_message')],
-        [Markup.button.callback('🔙 Назад', 'back_to_main')]
-      ])
-    );
+    if (ctx.callbackQuery) {
+      await ctx.reply(
+        '⚙️ Настройки аномалий\n\n' +
+        `📊 Текущие настройки:\n` +
+        `• Nσ (статистический порог): ${settings.n_sigma}\n` +
+        `• Минимальное изменение: ${settings.min_delta_threshold} игроков${customMessagePreview}\n\n` +
+        'Выберите параметр для изменения:',
+        Markup.inlineKeyboard([
+          [Markup.button.callback(`📊 Nσ (${settings.n_sigma})`, 'settings_n_sigma')],
+          [Markup.button.callback(`👥 Мин. изменение (${settings.min_delta_threshold})`, 'settings_min_delta')],
+          [Markup.button.callback('💬 Кастомное сообщение', 'settings_custom_message')],
+          [Markup.button.callback('🔙 Назад', 'back_to_main')]
+        ])
+      );
+    } else {
+      await ctx.reply(
+        '⚙️ Настройки аномалий\n\n' +
+        `📊 Текущие настройки:\n` +
+        `• Nσ (статистический порог): ${settings.n_sigma}\n` +
+        `• Минимальное изменение: ${settings.min_delta_threshold} игроков${customMessagePreview}\n\n` +
+        'Для изменения настроек используйте команды:\n' +
+        '• /settings_n_sigma - изменить Nσ\n' +
+        '• /settings_min_delta - изменить минимальное изменение\n' +
+        '• /settings_custom_message - изменить кастомное сообщение',
+        this.getPersistentKeyboard()
+      );
+    }
   }
 
   private async handleExportDb(ctx: any) {
@@ -612,12 +851,21 @@ export class TelegramBot {
       const elapsedHours = Math.floor(elapsedMinutes / 60);
       
       if (!this.isParsingActive) {
-        await ctx.reply(
-          '📊 Статус парсинга\n\n' +
-          '🔴 Парсинг не активен\n\n' +
-          '🚨 Для запуска используйте кнопку "Запустить поиск аномалий"',
-          this.getMainKeyboard()
-        );
+        if (ctx.callbackQuery) {
+          await ctx.reply(
+            '📊 Статус парсинга\n\n' +
+            '🔴 Парсинг не активен\n\n' +
+            '🚨 Для запуска используйте кнопку "Запустить поиск аномалий"',
+            this.getMainKeyboard()
+          );
+        } else {
+          await ctx.reply(
+            '📊 Статус парсинга\n\n' +
+            '🔴 Парсинг не активен\n\n' +
+            '🚨 Для запуска используйте кнопку "Поиск аномалий"',
+            this.getPersistentKeyboard()
+          );
+        }
         return;
       }
 
@@ -627,18 +875,28 @@ export class TelegramBot {
         `🔄 Обработано игр: ${this.parsingStats.totalProcessed}\n` +
         `🔄 Завершено кругов: ${this.parsingStats.completedCycles}\n` +
         `📊 Успешно: ${this.parsingStats.successfulParses} | Ошибок: ${this.parsingStats.failedParses}\n` +
-        `🎮 Последняя игра: ${this.parsingStats.lastGameTitle}\n\n` +
-        `🛑 Для остановки: /stop_parsing`;
+        `🎮 Последняя игра: ${this.parsingStats.lastGameTitle}`;
       
-      await ctx.reply(statusText, this.getMainKeyboard());
+      if (ctx.callbackQuery) {
+        await ctx.reply(statusText, this.getMainKeyboard());
+      } else {
+        await ctx.reply(statusText, this.getPersistentKeyboard());
+      }
       
     } catch (error) {
       console.error('❌ Status error:', error);
       try {
-        await ctx.reply(
-          '❌ Ошибка при получении статуса. Проверьте логи для подробностей.',
-          this.getMainKeyboard()
-        );
+        if (ctx.callbackQuery) {
+          await ctx.reply(
+            '❌ Ошибка при получении статуса. Проверьте логи для подробностей.',
+            this.getMainKeyboard()
+          );
+        } else {
+          await ctx.reply(
+            '❌ Ошибка при получении статуса. Проверьте логи для подробностей.',
+            this.getPersistentKeyboard()
+          );
+        }
       } catch (replyError) {
         console.error('❌ Failed to send error message:', replyError);
       }
@@ -648,12 +906,21 @@ export class TelegramBot {
   private async handleStopParsing(ctx: any) {
     try {
       if (!this.isParsingActive) {
-        await ctx.reply(
-          '⚠️ Парсинг не запущен!\n\n' +
-          '🔄 В данный момент круговой парсинг не активен.\n' +
-          '🚨 Для запуска используйте кнопку "Запустить поиск аномалий"',
-          this.getMainKeyboard()
-        );
+        if (ctx.callbackQuery) {
+          await ctx.reply(
+            '⚠️ Парсинг не запущен!\n\n' +
+            '🔄 В данный момент круговой парсинг не активен.\n' +
+            '🚨 Для запуска используйте кнопку "Запустить поиск аномалий"',
+            this.getMainKeyboard()
+          );
+        } else {
+          await ctx.reply(
+            '⚠️ Парсинг не запущен!\n\n' +
+            '🔄 В данный момент круговой парсинг не активен.\n' +
+            '🚨 Для запуска используйте кнопку "Поиск аномалий"',
+            this.getPersistentKeyboard()
+          );
+        }
         return;
       }
 
@@ -680,10 +947,18 @@ export class TelegramBot {
     } catch (cbError) {
       console.log('⚠️ Callback query already answered or expired, continuing...');
     }
-    await ctx.reply(
+    await ctx.editMessageText(
       '🤖 Roblox Monitor Bot\n\n' +
       'Выберите действие:',
-      this.getMainKeyboard()
+      { reply_markup: this.getMainKeyboard().reply_markup }
+    );
+  }
+
+  private async handleBackToMainWithPersistentKeyboard(ctx: any) {
+    await ctx.reply(
+      '🤖 Roblox Monitor Bot\n\n' +
+      '📱 Выберите действие с помощью кнопок ниже:',
+      this.getPersistentKeyboard()
     );
   }
 
@@ -701,17 +976,33 @@ export class TelegramBot {
       const success = await sendTestNotification();
       
       if (success) {
-        await ctx.reply(
-          '✅ Тестовое уведомление отправлено!\n\n' +
-          '📱 Проверьте чат на наличие тестового сообщения.',
-          this.getMainKeyboard()
-        );
+        if (ctx.callbackQuery) {
+          await ctx.reply(
+            '✅ Тестовое уведомление отправлено!\n\n' +
+            '📱 Проверьте чат на наличие тестового сообщения.',
+            this.getMainKeyboard()
+          );
+        } else {
+          await ctx.reply(
+            '✅ Тестовое уведомление отправлено!\n\n' +
+            '📱 Проверьте чат на наличие тестового сообщения.',
+            this.getPersistentKeyboard()
+          );
+        }
       } else {
-        await ctx.reply(
-          '❌ Не удалось отправить тестовое уведомление.\n\n' +
-          '🔧 Проверьте настройки TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID.',
-          this.getMainKeyboard()
-        );
+        if (ctx.callbackQuery) {
+          await ctx.reply(
+            '❌ Не удалось отправить тестовое уведомление.\n\n' +
+            '🔧 Проверьте настройки TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID.',
+            this.getMainKeyboard()
+          );
+        } else {
+          await ctx.reply(
+            '❌ Не удалось отправить тестовое уведомление.\n\n' +
+            '🔧 Проверьте настройки TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID.',
+            this.getPersistentKeyboard()
+          );
+        }
       }
       
     } catch (error) {
@@ -729,26 +1020,42 @@ export class TelegramBot {
 
   private async handleSettingsNSigma(ctx: any) {
     try {
-      await ctx.answerCbQuery('📊 Настройка Nσ');
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery('📊 Настройка Nσ');
+      }
     } catch (cbError) {
       console.log('⚠️ Callback query already answered or expired, continuing...');
     }
     
     const settings = getAnomalySettings();
     
-    await ctx.reply(
-      `📊 Настройка статистического порога (Nσ)\n\n` +
-      `Текущее значение: ${settings.n_sigma}\n\n` +
-      `Nσ определяет чувствительность обнаружения аномалий:\n` +
-      `• 2σ - более чувствительно (больше уведомлений)\n` +
-      `• 3σ - стандартно (рекомендуется)\n` +
-      `• 4σ - менее чувствительно (только значительные изменения)\n` +
-      `• 5σ - очень строго (только экстремальные изменения)\n\n` +
-      `Введите новое значение Nσ (от 1.0 до 10.0):`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
-      ])
-    );
+    if (ctx.callbackQuery) {
+      await ctx.reply(
+        `📊 Настройка статистического порога (Nσ)\n\n` +
+        `Текущее значение: ${settings.n_sigma}\n\n` +
+        `Nσ определяет чувствительность обнаружения аномалий:\n` +
+        `• 2σ - более чувствительно (больше уведомлений)\n` +
+        `• 3σ - стандартно (рекомендуется)\n` +
+        `• 4σ - менее чувствительно (только значительные изменения)\n` +
+        `• 5σ - очень строго (только экстремальные изменения)\n\n` +
+        `Введите новое значение Nσ (от 1.0 до 10.0):`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+        ])
+      );
+    } else {
+      await ctx.reply(
+        `📊 Настройка статистического порога (Nσ)\n\n` +
+        `Текущее значение: ${settings.n_sigma}\n\n` +
+        `Nσ определяет чувствительность обнаружения аномалий:\n` +
+        `• 2σ - более чувствительно (больше уведомлений)\n` +
+        `• 3σ - стандартно (рекомендуется)\n` +
+        `• 4σ - менее чувствительно (только значительные изменения)\n` +
+        `• 5σ - очень строго (только экстремальные изменения)\n\n` +
+        `Введите новое значение Nσ (от 1.0 до 10.0):`,
+        this.getPersistentKeyboard()
+      );
+    }
     
     // Устанавливаем флаг ожидания ввода Nσ
     this.waitingForNSigma = true;
@@ -757,26 +1064,42 @@ export class TelegramBot {
 
   private async handleSettingsMinDelta(ctx: any) {
     try {
-      await ctx.answerCbQuery('👥 Настройка минимального изменения');
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery('👥 Настройка минимального изменения');
+      }
     } catch (cbError) {
       console.log('⚠️ Callback query already answered or expired, continuing...');
     }
     
     const settings = getAnomalySettings();
     
-    await ctx.reply(
-      `👥 Настройка минимального изменения\n\n` +
-      `Текущее значение: ${settings.min_delta_threshold} игроков\n\n` +
-      `Минимальное изменение определяет, насколько большим должно быть изменение для срабатывания аномалии:\n` +
-      `• 5 - очень чувствительно\n` +
-      `• 10 - стандартно (рекомендуется)\n` +
-      `• 20 - менее чувствительно\n` +
-      `• 50 - только очень большие изменения\n\n` +
-      `Введите новое значение (от 1 до 100):`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
-      ])
-    );
+    if (ctx.callbackQuery) {
+      await ctx.reply(
+        `👥 Настройка минимального изменения\n\n` +
+        `Текущее значение: ${settings.min_delta_threshold} игроков\n\n` +
+        `Минимальное изменение определяет, насколько большим должно быть изменение для срабатывания аномалии:\n` +
+        `• 5 - очень чувствительно\n` +
+        `• 10 - стандартно (рекомендуется)\n` +
+        `• 20 - менее чувствительно\n` +
+        `• 50 - только очень большие изменения\n\n` +
+        `Введите новое значение (от 1 до 100):`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+        ])
+      );
+    } else {
+      await ctx.reply(
+        `👥 Настройка минимального изменения\n\n` +
+        `Текущее значение: ${settings.min_delta_threshold} игроков\n\n` +
+        `Минимальное изменение определяет, насколько большим должно быть изменение для срабатывания аномалии:\n` +
+        `• 5 - очень чувствительно\n` +
+        `• 10 - стандартно (рекомендуется)\n` +
+        `• 20 - менее чувствительно\n` +
+        `• 50 - только очень большие изменения\n\n` +
+        `Введите новое значение (от 1 до 100):`,
+        this.getPersistentKeyboard()
+      );
+    }
     
     // Устанавливаем флаг ожидания ввода минимального изменения
     this.waitingForMinDelta = true;
@@ -785,37 +1108,311 @@ export class TelegramBot {
 
   private async handleSettingsCustomMessage(ctx: any) {
     try {
-      await ctx.answerCbQuery('💬 Настройка кастомного сообщения');
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery('💬 Настройка кастомного сообщения');
+      }
     } catch (cbError) {
       console.log('⚠️ Callback query already answered or expired, continuing...');
     }
     
     const settings = getAnomalySettings();
     
-    await ctx.reply(
-      `💬 Настройка кастомного сообщения\n\n` +
-      `📝 Текущее сообщение:\n${settings.custom_message || 'Стандартное сообщение'}\n\n` +
-      `💡 Доступные переменные для подстановки:\n` +
-      `• {game_title} - название игры\n` +
-      `• {direction} - направление (📈 РОСТ/📉 ПАДЕНИЕ)\n` +
-      `• {delta} - изменение онлайна\n` +
-      `• {n_sigma} - значение Nσ\n` +
-      `• {threshold} - пороговое значение\n` +
-      `• {current_online} - текущий онлайн\n` +
-      `• {mean} - среднее значение\n` +
-      `• {stddev} - стандартное отклонение\n` +
-      `• {game_url} - ссылка на игру\n` +
-      `• {timestamp} - время обнаружения\n\n` +
-      `📝 Введите новое сообщение (или "сброс" для возврата к стандартному):`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
-      ])
-    );
+    if (ctx.callbackQuery) {
+      await ctx.reply(
+        `💬 Настройка кастомного сообщения\n\n` +
+        `📝 Текущее сообщение:\n${settings.custom_message || 'Стандартное сообщение'}\n\n` +
+        `💡 Доступные переменные для подстановки:\n` +
+        `• {game_title} - название игры\n` +
+        `• {direction} - направление (📈 РОСТ/📉 ПАДЕНИЕ)\n` +
+        `• {delta} - изменение онлайна\n` +
+        `• {n_sigma} - значение Nσ\n` +
+        `• {threshold} - пороговое значение\n` +
+        `• {current_online} - текущий онлайн\n` +
+        `• {mean} - среднее значение\n` +
+        `• {stddev} - стандартное отклонение\n` +
+        `• {game_url} - ссылка на игру\n` +
+        `• {timestamp} - время обнаружения\n\n` +
+        `📝 Введите новое сообщение (или "сброс" для возврата к стандартному):`,
+        Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+        ])
+      );
+    } else {
+      await ctx.reply(
+        `💬 Настройка кастомного сообщения\n\n` +
+        `📝 Текущее сообщение:\n${settings.custom_message || 'Стандартное сообщение'}\n\n` +
+        `💡 Доступные переменные для подстановки:\n` +
+        `• {game_title} - название игры\n` +
+        `• {direction} - направление (📈 РОСТ/📉 ПАДЕНИЕ)\n` +
+        `• {delta} - изменение онлайна\n` +
+        `• {n_sigma} - значение Nσ\n` +
+        `• {threshold} - пороговое значение\n` +
+        `• {current_online} - текущий онлайн\n` +
+        `• {mean} - среднее значение\n` +
+        `• {stddev} - стандартное отклонение\n` +
+        `• {game_url} - ссылка на игру\n` +
+        `• {timestamp} - время обнаружения\n\n` +
+        `📝 Введите новое сообщение (или "сброс" для возврата к стандартному):`,
+        this.getPersistentKeyboard()
+      );
+    }
     
     // Устанавливаем флаг ожидания ввода кастомного сообщения
     this.waitingForCustomMessage = true;
     this.waitingForNSigma = false;
     this.waitingForMinDelta = false;
+  }
+
+  private async handleCleanupData(ctx: any) {
+    try {
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery('🧹 Очистка данных...', { show_alert: false });
+      }
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    try {
+      await ctx.reply('🧹 Выполняем очистку старых данных...\n\n⏳ Это может занять несколько секунд.');
+
+      // Выполняем очистку данных
+      const cleanupResult = performDataCleanup();
+      
+      if (ctx.callbackQuery) {
+        await ctx.reply(
+          `✅ Очистка данных завершена!\n\n` +
+          `📊 Результаты очистки:\n` +
+          `• Удалено снапшотов: ${cleanupResult.snapshotsDeleted}\n` +
+          `• Удалено аномалий: ${cleanupResult.anomaliesDeleted}\n` +
+          `• Всего удалено записей: ${cleanupResult.totalDeleted}\n\n` +
+          `🔄 Автоматическая очистка выполняется каждые 6 часов во время парсинга.`,
+          this.getMainKeyboard()
+        );
+      } else {
+        await ctx.reply(
+          `✅ Очистка данных завершена!\n\n` +
+          `📊 Результаты очистки:\n` +
+          `• Удалено снапшотов: ${cleanupResult.snapshotsDeleted}\n` +
+          `• Удалено аномалий: ${cleanupResult.anomaliesDeleted}\n` +
+          `• Всего удалено записей: ${cleanupResult.totalDeleted}\n\n` +
+          `🔄 Автоматическая очистка выполняется каждые 6 часов во время парсинга.`,
+          this.getPersistentKeyboard()
+        );
+      }
+      
+    } catch (error) {
+      console.error('❌ Cleanup data error:', error);
+      try {
+        if (ctx.callbackQuery) {
+          await ctx.reply(
+            '❌ Ошибка при очистке данных. Проверьте логи для подробностей.',
+            this.getMainKeyboard()
+          );
+        } else {
+          await ctx.reply(
+            '❌ Ошибка при очистке данных. Проверьте логи для подробностей.',
+            this.getPersistentKeyboard()
+          );
+        }
+      } catch (replyError) {
+        console.error('❌ Failed to send error message:', replyError);
+      }
+    }
+  }
+
+  private async handleDatabaseMenu(ctx: any) {
+    try {
+      await ctx.answerCbQuery('🗄️ Меню базы данных');
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    // Получаем статистику базы данных
+    const gamesCount = db.prepare('SELECT COUNT(*) as count FROM games').get() as { count: number };
+    const snapshotsCount = db.prepare('SELECT COUNT(*) as count FROM snapshots').get() as { count: number };
+    const anomaliesCount = db.prepare('SELECT COUNT(*) as count FROM anomalies').get() as { count: number };
+    
+    // Получаем размер базы данных
+    const dbPath = config.DB_PATH;
+    const fs = require('fs');
+    let dbSize = 0;
+    try {
+      const stats = fs.statSync(dbPath);
+      dbSize = stats.size;
+    } catch (error) {
+      console.log('Could not get database size:', error);
+    }
+    
+    const dbSizeKB = Math.round(dbSize / 1024);
+    
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(
+        '🗄️ База данных\n\n' +
+        `📊 Статистика:\n` +
+        `• Игр: ${gamesCount.count}\n` +
+        `• Снапшотов: ${snapshotsCount.count}\n` +
+        `• Аномалий: ${anomaliesCount.count}\n` +
+        `• Размер: ${dbSizeKB} KB\n\n` +
+        'Выберите действие:',
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('📤 Экспорт базы данных', 'export_db')],
+          [Markup.button.callback('🧹 Очистить старые данные', 'cleanup_data')],
+          [Markup.button.callback('📊 Статистика базы данных', 'db_stats')],
+          [Markup.button.callback('🔙 Назад', 'back_to_main')]
+        ]).reply_markup }
+      );
+    } else {
+      await ctx.reply(
+        '🗄️ База данных\n\n' +
+        `📊 Статистика:\n` +
+        `• Игр: ${gamesCount.count}\n` +
+        `• Снапшотов: ${snapshotsCount.count}\n` +
+        `• Аномалий: ${anomaliesCount.count}\n` +
+        `• Размер: ${dbSizeKB} KB\n\n` +
+        'Для работы с базой данных используйте команды:\n' +
+        '• /export_db - экспорт базы данных\n' +
+        '• /cleanup_data - очистка старых данных\n' +
+        '• /db_stats - детальная статистика',
+        this.getPersistentKeyboard()
+      );
+    }
+  }
+
+  private async handleDatabaseStats(ctx: any) {
+    try {
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery('📊 Статистика базы данных...', { show_alert: false });
+      }
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    try {
+      // Получаем детальную статистику
+      const gamesCount = db.prepare('SELECT COUNT(*) as count FROM games').get() as { count: number };
+      const snapshotsCount = db.prepare('SELECT COUNT(*) as count FROM snapshots').get() as { count: number };
+      const anomaliesCount = db.prepare('SELECT COUNT(*) as count FROM anomalies').get() as { count: number };
+      const notifiedAnomalies = db.prepare('SELECT COUNT(*) as count FROM anomalies WHERE notified = 1').get() as { count: number };
+      const unnotifiedAnomalies = db.prepare('SELECT COUNT(*) as count FROM anomalies WHERE notified = 0').get() as { count: number };
+      
+      // Получаем временные рамки данных
+      const oldestSnapshot = db.prepare('SELECT MIN(timestamp) as oldest FROM snapshots').get() as { oldest: number };
+      const newestSnapshot = db.prepare('SELECT MAX(timestamp) as newest FROM snapshots').get() as { newest: number };
+      const oldestAnomaly = db.prepare('SELECT MIN(timestamp) as oldest FROM anomalies').get() as { oldest: number };
+      const newestAnomaly = db.prepare('SELECT MAX(timestamp) as newest FROM anomalies').get() as { newest: number };
+      
+      // Получаем размер базы данных
+      const dbPath = config.DB_PATH;
+      const fs = require('fs');
+      let dbSize = 0;
+      try {
+        const stats = fs.statSync(dbPath);
+        dbSize = stats.size;
+      } catch (error) {
+        console.log('Could not get database size:', error);
+      }
+      
+      const dbSizeKB = Math.round(dbSize / 1024);
+      const dbSizeMB = Math.round(dbSize / (1024 * 1024) * 100) / 100;
+      
+      // Форматируем даты
+      const formatDate = (timestamp: number) => {
+        if (!timestamp) return 'Нет данных';
+        return new Date(timestamp).toLocaleString('ru-RU');
+      };
+      
+      const statsText = `📊 Детальная статистика базы данных\n\n` +
+        `📈 Основные данные:\n` +
+        `• Игр: ${gamesCount.count}\n` +
+        `• Снапшотов: ${snapshotsCount.count}\n` +
+        `• Аномалий: ${anomaliesCount.count}\n\n` +
+        `🚨 Аномалии:\n` +
+        `• Отправленных: ${notifiedAnomalies.count}\n` +
+        `• Неотправленных: ${unnotifiedAnomalies.count}\n\n` +
+        `📅 Временные рамки:\n` +
+        `• Снапшоты: ${formatDate(oldestSnapshot.oldest)} - ${formatDate(newestSnapshot.newest)}\n` +
+        `• Аномалии: ${formatDate(oldestAnomaly.oldest)} - ${formatDate(newestAnomaly.newest)}\n\n` +
+        `💾 Размер базы данных: ${dbSizeKB} KB (${dbSizeMB} MB)`;
+      
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(
+          statsText,
+          { reply_markup: Markup.inlineKeyboard([
+            [Markup.button.callback('🔄 Обновить статистику', 'db_stats')],
+            [Markup.button.callback('🔙 Назад к базе данных', 'database_menu')]
+          ]).reply_markup }
+        );
+      } else {
+        await ctx.reply(
+          statsText,
+          this.getPersistentKeyboard()
+        );
+      }
+      
+    } catch (error) {
+      console.error('❌ Database stats error:', error);
+      try {
+        if (ctx.callbackQuery) {
+          await ctx.reply(
+            '❌ Ошибка при получении статистики базы данных. Проверьте логи для подробностей.',
+            Markup.inlineKeyboard([
+              [Markup.button.callback('🔙 Назад к базе данных', 'database_menu')]
+            ])
+          );
+        } else {
+          await ctx.reply(
+            '❌ Ошибка при получении статистики базы данных. Проверьте логи для подробностей.',
+            this.getPersistentKeyboard()
+          );
+        }
+      } catch (replyError) {
+        console.error('❌ Failed to send error message:', replyError);
+      }
+    }
+  }
+
+  private async handleCancelGameParsing(ctx: any) {
+    try {
+      if (ctx.callbackQuery) {
+        await ctx.answerCbQuery('🛑 Отмена парсинга игр...', { show_alert: false });
+      }
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    if (!this.isGameParsingActive) {
+      if (ctx.callbackQuery) {
+        await ctx.editMessageText(
+          '⚠️ Парсинг игр не запущен!\n\n' +
+          '🔄 В данный момент парсинг игр не активен.'
+        );
+      } else {
+        await ctx.reply(
+          '⚠️ Парсинг игр не запущен!\n\n' +
+          '🔄 В данный момент парсинг игр не активен.',
+          this.getPersistentKeyboard()
+        );
+      }
+      return;
+    }
+
+    // Останавливаем парсинг игр
+    this.isGameParsingActive = false;
+    
+    console.log('🛑 Game parsing stopped by user command');
+    
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(
+        '🛑 Парсинг игр остановлен!\n\n' +
+        '✅ Парсинг новых игр был прерван пользователем.'
+      );
+    } else {
+      await ctx.reply(
+        '🛑 Парсинг игр остановлен!\n\n' +
+        '✅ Парсинг новых игр был прерван пользователем.',
+        this.getPersistentKeyboard()
+      );
+    }
   }
 
   public async start() {
