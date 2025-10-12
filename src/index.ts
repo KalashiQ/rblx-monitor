@@ -5,6 +5,8 @@ import { initSchema } from './db';
 import { populate } from './populate';
 import { closeBrowser } from './browser';
 import { TelegramBot } from './telegram';
+import { analyzeAllGamesForAnomalies } from './anomaly-detector';
+import { sendAnomalyNotifications } from './anomaly-notifier';
 
 const logger = pino({ level: config.LOG_LEVEL });
 
@@ -12,29 +14,36 @@ async function main(): Promise<void> {
   initSchema();
   logger.info({ env: config.NODE_ENV }, 'Roblox monitor started');
   
-  // Запускаем Telegram бота если токен настроен
+  // Telegram бот запускается отдельно через telegram-bot.ts
+  // Не запускаем его здесь, чтобы избежать конфликтов
   let telegramBot: TelegramBot | null = null;
-  if (config.TELEGRAM_BOT_TOKEN) {
-    try {
-      telegramBot = new TelegramBot();
-      await telegramBot.start();
-      logger.info('Telegram bot started');
-    } catch (error) {
-      logger.error({ error: (error as Error).message }, 'Failed to start Telegram bot');
-    }
-  } else {
-    logger.warn('TELEGRAM_BOT_TOKEN not set, Telegram bot disabled');
-  }
   
   try {
     await populate();
     logger.info('Populate completed');
+    
+    // Анализируем аномалии после парсинга
+    logger.info('Начинаем анализ аномалий...');
+    const anomalyResult = analyzeAllGamesForAnomalies();
+    logger.info({ 
+      anomaliesFound: anomalyResult.anomaliesFound, 
+      errors: anomalyResult.errors 
+    }, 'Анализ аномалий завершен');
+    
+    // Отправляем уведомления об аномалиях
+    if (anomalyResult.anomaliesFound > 0) {
+      logger.info('Отправляем уведомления об аномалиях...');
+      const notificationResult = await sendAnomalyNotifications();
+      logger.info({ 
+        sent: notificationResult.sent, 
+        errors: notificationResult.errors 
+      }, 'Отправка уведомлений завершена');
+    }
+    
   } catch (error) {
     logger.error({ error: (error as Error).message }, 'Populate failed');
   } finally {
-    if (telegramBot) {
-      await telegramBot.stop();
-    }
+    // telegramBot всегда null, так как мы его не запускаем
     await closeBrowser();
   }
 }

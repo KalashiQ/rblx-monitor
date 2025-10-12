@@ -3,6 +3,8 @@ import { newPage } from './browser';
 import pino from 'pino';
 import { config } from './config';
 import { db } from './db';
+import { analyzeGameForAnomalies, saveAnomaly } from './anomaly-detector';
+import { sendAnomalyNotifications } from './anomaly-notifier';
 
 const logger = pino({ level: config.LOG_LEVEL });
 
@@ -392,6 +394,43 @@ export async function startCircularParsingForDuration(
         successfulParses++;
         const readableTime = formatTimestamp(Date.now());
         logger.debug({ gameId: game.id, title: game.title, onlineCount, time: readableTime }, 'Successfully parsed and saved online count');
+        
+        // Анализируем аномалии сразу после сохранения снапшота
+        try {
+          const anomaly = analyzeGameForAnomalies(game.id, onlineCount);
+          if (anomaly) {
+            const anomalyId = saveAnomaly(anomaly);
+            logger.info({ 
+              gameId: game.id, 
+              title: game.title, 
+              anomalyId, 
+              delta: anomaly.delta, 
+              direction: anomaly.direction 
+            }, 'Обнаружена аномалия во время парсинга');
+            
+            // Отправляем уведомление об аномалии
+            try {
+              const notificationResult = await sendAnomalyNotifications();
+              if (notificationResult.sent > 0) {
+                logger.info({ 
+                  gameId: game.id, 
+                  title: game.title, 
+                  sent: notificationResult.sent 
+                }, 'Уведомление об аномалии отправлено');
+              }
+            } catch (notificationError) {
+              logger.error({ 
+                gameId: game.id, 
+                error: (notificationError as Error).message 
+              }, 'Ошибка при отправке уведомления об аномалии');
+            }
+          }
+        } catch (anomalyError) {
+          logger.error({ 
+            gameId: game.id, 
+            error: (anomalyError as Error).message 
+          }, 'Ошибка при анализе аномалий');
+        }
       } else {
         failedParses++;
         const error = `Failed to parse online for game ${game.title} (ID: ${game.id})`;

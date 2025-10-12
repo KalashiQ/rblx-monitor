@@ -3,6 +3,7 @@ import { config } from './config';
 import { parseNewGames } from './populate';
 import { db } from './db';
 import { startCircularParsingForDuration } from './roblox-parser';
+import { sendTestNotification } from './anomaly-notifier';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -56,11 +57,12 @@ export class TelegramBot {
       ctx.reply(
         '📋 Доступные команды:\n\n' +
         '🔍 Парсинг новых игр - запустить парсинг новых игр с Roblox\n' +
-        '🚨 Запустить поиск аномалий - найти аномальные игры\n' +
+        '🚨 Запустить поиск аномалий - круглосуточный парсинг с анализом аномалий\n' +
         '⚙️ Настройки - настройки бота\n' +
         '📤 Экспорт файла базы данных - скачать базу данных\n\n' +
         '📊 /status - показать статус парсинга\n' +
-        '🛑 /stop_parsing - остановить парсинг аномалий\n\n' +
+        '🛑 /stop_parsing - остановить парсинг аномалий\n' +
+        '🧪 /test_notification - тестовое уведомление\n\n' +
         'Используйте кнопки ниже для навигации.',
         this.getMainKeyboard()
       );
@@ -76,6 +78,13 @@ export class TelegramBot {
     this.bot.command('status', (ctx) => {
       console.log('📊 status command received');
       this.handleStatus(ctx);
+    });
+
+
+    // Команда /test_notification
+    this.bot.command('test_notification', (ctx) => {
+      console.log('🧪 test_notification command received');
+      this.handleTestNotification(ctx);
     });
 
     // Обработчики кнопок
@@ -203,6 +212,8 @@ export class TelegramBot {
       await ctx.reply(
         '🚨 Запуск поиска аномалий...\n\n' +
         '🔄 Начинаем круговой парсинг онлайна игр с официального сайта Roblox.\n' +
+        '📊 Система автоматически анализирует каждую игру на предмет аномалий.\n' +
+        '🚨 При обнаружении аномалии сразу отправляется уведомление в чат.\n' +
         '⏳ Парсинг будет работать круглосуточно до остановки.\n\n' +
         '🛑 Для остановки нажмите кнопку ниже или используйте команду /stop_parsing',
         parsingKeyboard
@@ -513,6 +524,46 @@ export class TelegramBot {
       'Выберите действие:',
       this.getMainKeyboard()
     );
+  }
+
+
+  private async handleTestNotification(ctx: any) {
+    try {
+      await ctx.answerCbQuery('🧪 Тестовое уведомление...', { show_alert: false });
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    try {
+      await ctx.reply('🧪 Отправка тестового уведомления...');
+
+      const success = await sendTestNotification();
+      
+      if (success) {
+        await ctx.reply(
+          '✅ Тестовое уведомление отправлено!\n\n' +
+          '📱 Проверьте чат на наличие тестового сообщения.',
+          this.getMainKeyboard()
+        );
+      } else {
+        await ctx.reply(
+          '❌ Не удалось отправить тестовое уведомление.\n\n' +
+          '🔧 Проверьте настройки TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID.',
+          this.getMainKeyboard()
+        );
+      }
+      
+    } catch (error) {
+      console.error('❌ Test notification error:', error);
+      try {
+        await ctx.reply(
+          '❌ Ошибка при отправке тестового уведомления. Проверьте логи для подробностей.',
+          this.getMainKeyboard()
+        );
+      } catch (replyError) {
+        console.error('❌ Failed to send error message:', replyError);
+      }
+    }
   }
 
   public async start() {
