@@ -55,6 +55,17 @@ export function initSchema(): void {
   CREATE INDEX IF NOT EXISTS idx_anomalies_game_time ON anomalies(game_id, timestamp);
   CREATE INDEX IF NOT EXISTS idx_anomalies_notified ON anomalies(notified);
 
+  CREATE TABLE IF NOT EXISTS anomaly_settings (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    n_sigma REAL NOT NULL DEFAULT 3.0,
+    min_delta_threshold INTEGER NOT NULL DEFAULT 10,
+    updated_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now') * 1000)
+  );
+
+  -- Вставляем настройки по умолчанию, если их нет
+  INSERT OR IGNORE INTO anomaly_settings (id, n_sigma, min_delta_threshold) 
+  VALUES (1, 3.0, 10);
+
   CREATE TABLE IF NOT EXISTS kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -184,6 +195,28 @@ export function clearTables(): void {
   db.prepare('DELETE FROM anomalies').run();
   db.prepare('DELETE FROM snapshots').run();
   db.prepare('DELETE FROM games').run();
+}
+
+// Функции для работы с настройками аномалий
+export function getAnomalySettings(): { n_sigma: number; min_delta_threshold: number } {
+  const stmt = db.prepare('SELECT n_sigma, min_delta_threshold FROM anomaly_settings WHERE id = 1');
+  const result = stmt.get() as { n_sigma: number; min_delta_threshold: number } | undefined;
+  
+  if (!result) {
+    // Возвращаем настройки по умолчанию
+    return { n_sigma: 3.0, min_delta_threshold: 10 };
+  }
+  
+  return result;
+}
+
+export function updateAnomalySettings(nSigma: number, minDeltaThreshold: number): void {
+  const stmt = db.prepare(`
+    UPDATE anomaly_settings 
+    SET n_sigma = ?, min_delta_threshold = ?, updated_at = ?
+    WHERE id = 1
+  `);
+  stmt.run(nSigma, minDeltaThreshold, Date.now());
 }
 
 

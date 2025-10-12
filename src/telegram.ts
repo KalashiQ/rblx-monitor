@@ -1,7 +1,7 @@
 import { Telegraf, Markup } from 'telegraf';
 import { config } from './config';
 import { parseNewGames } from './populate';
-import { db } from './db';
+import { db, getAnomalySettings, updateAnomalySettings } from './db';
 import { startCircularParsingForDuration } from './roblox-parser';
 import { sendTestNotification } from './anomaly-notifier';
 import * as fs from 'fs';
@@ -11,6 +11,8 @@ export class TelegramBot {
   private bot: Telegraf;
   private isParsingActive: boolean = false;
   private parsingStartTime: number = 0;
+  private waitingForNSigma: boolean = false;
+  private waitingForMinDelta: boolean = false;
   private parsingStats: {
     totalProcessed: number;
     successfulParses: number;
@@ -112,6 +114,63 @@ export class TelegramBot {
       console.log('🛑 cancel_parsing action triggered');
       this.handleStopParsing(ctx);
     });
+    this.bot.action('settings_n_sigma', (ctx) => {
+      console.log('📊 settings_n_sigma action triggered');
+      this.handleSettingsNSigma(ctx);
+    });
+    this.bot.action('settings_min_delta', (ctx) => {
+      console.log('👥 settings_min_delta action triggered');
+      this.handleSettingsMinDelta(ctx);
+    });
+
+    // Обработка текстовых сообщений для настроек
+    this.bot.on('text', async (ctx) => {
+      if (this.waitingForNSigma) {
+        const text = ctx.message.text;
+        const nSigma = parseFloat(text);
+        
+        if (isNaN(nSigma) || nSigma < 1.0 || nSigma > 10.0) {
+          await ctx.reply('❌ Неверное значение. Введите число от 1.0 до 10.0');
+          return;
+        }
+        
+        const settings = getAnomalySettings();
+        updateAnomalySettings(nSigma, settings.min_delta_threshold);
+        
+        await ctx.reply(
+          `✅ Nσ обновлен на ${nSigma}\n\n` +
+          `Новые настройки:\n` +
+          `• Nσ: ${nSigma}\n` +
+          `• Мин. изменение: ${settings.min_delta_threshold}`
+        );
+        
+        this.waitingForNSigma = false;
+        return;
+      }
+      
+      if (this.waitingForMinDelta) {
+        const text = ctx.message.text;
+        const minDelta = parseInt(text);
+        
+        if (isNaN(minDelta) || minDelta < 1 || minDelta > 100) {
+          await ctx.reply('❌ Неверное значение. Введите число от 1 до 100');
+          return;
+        }
+        
+        const settings = getAnomalySettings();
+        updateAnomalySettings(settings.n_sigma, minDelta);
+        
+        await ctx.reply(
+          `✅ Минимальное изменение обновлено на ${minDelta}\n\n` +
+          `Новые настройки:\n` +
+          `• Nσ: ${settings.n_sigma}\n` +
+          `• Мин. изменение: ${minDelta}`
+        );
+        
+        this.waitingForMinDelta = false;
+        return;
+      }
+    });
 
     // Обработка ошибок
     this.bot.catch((err, ctx) => {
@@ -203,10 +262,8 @@ export class TelegramBot {
         lastGameIndex: -1
       };
       
-      // Создаем клавиатуру с кнопкой отмены
-      const parsingKeyboard = Markup.inlineKeyboard([
-        [Markup.button.callback('🛑 Остановить парсинг', 'cancel_parsing')]
-      ]);
+      // Получаем текущие настройки аномалий
+      const settings = getAnomalySettings();
       
       // Отправляем сообщение о начале процесса
       await ctx.reply(
@@ -215,8 +272,9 @@ export class TelegramBot {
         '📊 Система автоматически анализирует каждую игру на предмет аномалий.\n' +
         '🚨 При обнаружении аномалии сразу отправляется уведомление в чат.\n' +
         '⏳ Парсинг будет работать круглосуточно до остановки.\n\n' +
-        '🛑 Для остановки нажмите кнопку ниже или используйте команду /stop_parsing',
-        parsingKeyboard
+        `⚙️ Текущие настройки аномалий:\n` +
+        `• Nσ (статистический порог): ${settings.n_sigma}\n` +
+        `• Минимальное изменение: ${settings.min_delta_threshold} игроков`
       );
 
       // Запускаем круговой парсинг на 24 часа (86400000 мс) - практически бесконечно
@@ -299,17 +357,18 @@ export class TelegramBot {
       // Сбрасываем флаг активного парсинга
       this.isParsingActive = false;
 
-      // Отправляем финальные результаты
+      // Отправляем объединенные результаты
       await ctx.reply(
-        `✅ Поиск аномалий завершен!\n\n` +
+        `🛑 Парсинг остановлен!\n\n` +
+        `✅ Круговой парсинг онлайна игр был остановлен.\n` +
+        `🔄 Завершено кругов: ${result.totalCycles}\n` +
+        `📊 Все собранные данные сохранены в базу данных.\n\n` +
         `📊 Статистика:\n` +
         `🎮 Всего игр: ${result.totalGames}\n` +
         `✅ Успешно обработано: ${result.successfulParses}\n` +
         `❌ Ошибок: ${result.failedParses}\n` +
-        `🔄 Полных циклов: ${result.totalCycles}\n` +
-        `⏱️ Среднее время на игру: ${result.averageTimePerGame}мс\n` +
-        `📈 Снапшоты сохранены в базу данных\n\n` +
-        `🔍 Теперь можно анализировать данные на предмет аномалий.`,
+        `⏱️ Среднее время на игру: ${result.averageTimePerGame}мс\n\n` +
+        `🚨 Для повторного запуска используйте кнопку "Запустить поиск аномалий"`,
         this.getMainKeyboard()
       );
 
@@ -336,14 +395,19 @@ export class TelegramBot {
     } catch (cbError) {
       console.log('⚠️ Callback query already answered or expired, continuing...');
     }
+    
+    // Получаем текущие настройки
+    const settings = getAnomalySettings();
+    
     await ctx.reply(
-      '⚙️ Настройки бота\n\n' +
-      '🔧 Функция настроек пока не реализована.\n\n' +
-      'Здесь будут доступны:\n' +
-      '• Настройка интервала мониторинга\n' +
-      '• Настройка параметров аномалий\n' +
-      '• Уведомления',
+      '⚙️ Настройки аномалий\n\n' +
+      `📊 Текущие настройки:\n` +
+      `• Nσ (статистический порог): ${settings.n_sigma}\n` +
+      `• Минимальное изменение: ${settings.min_delta_threshold} игроков\n\n` +
+      'Выберите параметр для изменения:',
       Markup.inlineKeyboard([
+        [Markup.button.callback(`📊 Nσ (${settings.n_sigma})`, 'settings_n_sigma')],
+        [Markup.button.callback(`👥 Мин. изменение (${settings.min_delta_threshold})`, 'settings_min_delta')],
         [Markup.button.callback('🔙 Назад', 'back_to_main')]
       ])
     );
@@ -360,13 +424,18 @@ export class TelegramBot {
 
       console.log('🔄 Syncing database before export...');
       
-      // Принудительно синхронизируем базу данных
-      db.pragma('synchronous = FULL');
-      db.pragma('journal_mode = DELETE');
-      db.pragma('wal_checkpoint(FULL)');
-      
-      // Ждем немного, чтобы изменения записались
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        // Принудительно синхронизируем базу данных
+        db.pragma('synchronous = FULL');
+        db.pragma('journal_mode = DELETE');
+        db.pragma('wal_checkpoint(FULL)');
+        
+        // Ждем немного, чтобы изменения записались
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      } catch (syncError) {
+        console.log('⚠️ Database sync failed, continuing with export...', syncError);
+        // Продолжаем экспорт даже если синхронизация не удалась
+      }
       
       // Создаем временный файл с базой данных
       const dbPath = config.DB_PATH;
@@ -376,13 +445,57 @@ export class TelegramBot {
       
       // Создаем новую базу данных с помощью VACUUM INTO
       // Это гарантирует, что все данные будут в одном файле
+      let exportSuccess = false;
+      
       try {
         db.prepare(`VACUUM INTO '${tempPath}'`).run();
         console.log('✅ VACUUM INTO completed successfully');
+        exportSuccess = true;
       } catch (vacuumError) {
-        console.log('⚠️ VACUUM INTO failed, falling back to file copy');
-        // Если VACUUM INTO не работает, используем обычное копирование
-        fs.copyFileSync(dbPath, tempPath);
+        console.log('⚠️ VACUUM INTO failed, trying alternative method...', vacuumError);
+        
+        try {
+          // Альтернативный способ: создаем новую базу и копируем данные
+          const tempDb = require('better-sqlite3')(tempPath);
+          
+          // Копируем схему
+          const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table'").all() as Array<{ sql: string }>;
+          for (const table of schema) {
+            if (table.sql) {
+              tempDb.exec(table.sql);
+            }
+          }
+          
+          // Копируем данные из основных таблиц
+          const tables = ['games', 'snapshots', 'anomalies', 'anomaly_settings'];
+          for (const tableName of tables) {
+            try {
+              const data = db.prepare(`SELECT * FROM ${tableName}`).all();
+              if (data.length > 0) {
+                const insertStmt = tempDb.prepare(`INSERT INTO ${tableName} SELECT * FROM main.${tableName}`);
+                // Создаем временную таблицу и копируем данные
+                for (const row of data as Array<Record<string, any>>) {
+                  const columns = Object.keys(row);
+                  const values = Object.values(row);
+                  const placeholders = columns.map(() => '?').join(', ');
+                  const insertQuery = `INSERT INTO ${tableName} (${columns.join(', ')}) VALUES (${placeholders})`;
+                  tempDb.prepare(insertQuery).run(...values);
+                }
+              }
+            } catch (tableError) {
+              console.log(`⚠️ Could not copy table ${tableName}:`, tableError);
+            }
+          }
+          
+          tempDb.close();
+          console.log('✅ Alternative export method completed');
+          exportSuccess = true;
+        } catch (altError) {
+          console.log('⚠️ Alternative export failed, using simple file copy');
+          // Последний способ - простое копирование файла
+          fs.copyFileSync(dbPath, tempPath);
+          exportSuccess = true;
+        }
       }
       
       // Проверяем размер файла и количество игр
@@ -490,15 +603,6 @@ export class TelegramBot {
       // Останавливаем парсинг
       this.isParsingActive = false;
       
-      await ctx.reply(
-        '🛑 Парсинг остановлен!\n\n' +
-        '✅ Круговой парсинг онлайна игр был остановлен.\n' +
-        `🔄 Завершено кругов: ${this.parsingStats.completedCycles}\n` +
-        '📊 Все собранные данные сохранены в базу данных.\n\n' +
-        '🚨 Для повторного запуска используйте кнопку "Запустить поиск аномалий"',
-        this.getMainKeyboard()
-      );
-      
       console.log('🛑 Parsing stopped by user command');
     } catch (error) {
       console.error('❌ Stop parsing error:', error);
@@ -564,6 +668,62 @@ export class TelegramBot {
         console.error('❌ Failed to send error message:', replyError);
       }
     }
+  }
+
+  private async handleSettingsNSigma(ctx: any) {
+    try {
+      await ctx.answerCbQuery('📊 Настройка Nσ');
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    const settings = getAnomalySettings();
+    
+    await ctx.reply(
+      `📊 Настройка статистического порога (Nσ)\n\n` +
+      `Текущее значение: ${settings.n_sigma}\n\n` +
+      `Nσ определяет чувствительность обнаружения аномалий:\n` +
+      `• 2σ - более чувствительно (больше уведомлений)\n` +
+      `• 3σ - стандартно (рекомендуется)\n` +
+      `• 4σ - менее чувствительно (только значительные изменения)\n` +
+      `• 5σ - очень строго (только экстремальные изменения)\n\n` +
+      `Введите новое значение Nσ (от 1.0 до 10.0):`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+      ])
+    );
+    
+    // Устанавливаем флаг ожидания ввода Nσ
+    this.waitingForNSigma = true;
+    this.waitingForMinDelta = false;
+  }
+
+  private async handleSettingsMinDelta(ctx: any) {
+    try {
+      await ctx.answerCbQuery('👥 Настройка минимального изменения');
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    const settings = getAnomalySettings();
+    
+    await ctx.reply(
+      `👥 Настройка минимального изменения\n\n` +
+      `Текущее значение: ${settings.min_delta_threshold} игроков\n\n` +
+      `Минимальное изменение определяет, насколько большим должно быть изменение для срабатывания аномалии:\n` +
+      `• 5 - очень чувствительно\n` +
+      `• 10 - стандартно (рекомендуется)\n` +
+      `• 20 - менее чувствительно\n` +
+      `• 50 - только очень большие изменения\n\n` +
+      `Введите новое значение (от 1 до 100):`,
+      Markup.inlineKeyboard([
+        [Markup.button.callback('🔙 Назад к настройкам', 'settings')]
+      ])
+    );
+    
+    // Устанавливаем флаг ожидания ввода минимального изменения
+    this.waitingForMinDelta = true;
+    this.waitingForNSigma = false;
   }
 
   public async start() {

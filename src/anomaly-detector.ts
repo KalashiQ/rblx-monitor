@@ -1,6 +1,6 @@
 import pino from 'pino';
 import { config } from './config';
-import { db, getSnapshots, insertAnomaly, markAnomalyNotified } from './db';
+import { db, getSnapshots, insertAnomaly, markAnomalyNotified, getAnomalySettings } from './db';
 import type { Anomaly } from './types';
 
 const logger = pino({ level: config.LOG_LEVEL });
@@ -29,12 +29,9 @@ function calculateStdDev(values: number[], mean: number): number {
  * Но поскольку мы передаем только delta, stddev и nSigma, 
  * мы проверяем: |delta| > N * stddev (что эквивалентно для больших отклонений)
  */
-function isAnomaly(delta: number, stddev: number, nSigma: number): boolean {
-  // Минимальное изменение для аномалии (например, +10 игроков)
-  const MIN_DELTA_THRESHOLD = 10;
-  
+function isAnomaly(delta: number, stddev: number, nSigma: number, minDeltaThreshold: number): boolean {
   // Проверяем и статистический порог, и минимальное изменение
-  return Math.abs(delta) > nSigma * stddev && Math.abs(delta) >= MIN_DELTA_THRESHOLD;
+  return Math.abs(delta) > nSigma * stddev && Math.abs(delta) >= minDeltaThreshold;
 }
 
 /**
@@ -49,6 +46,10 @@ function getAnomalyDirection(delta: number): 'up' | 'down' {
  */
 export function analyzeGameForAnomalies(gameId: number, currentCcu: number): Anomaly | null {
   try {
+    // Получаем настройки аномалий из базы данных
+    const settings = getAnomalySettings();
+    const { n_sigma, min_delta_threshold } = settings;
+    
     // Получаем окно истории за последние 24 часа
     const windowStart = Date.now() - (24 * 60 * 60 * 1000); // 24 часа назад
     const snapshots = getSnapshots(gameId, windowStart);
@@ -74,9 +75,15 @@ export function analyzeGameForAnomalies(gameId: number, currentCcu: number): Ano
     // Вычисляем дельту
     const delta = currentCcu - mean;
     
-    // Проверяем на аномалию
-    if (!isAnomaly(delta, stddev, config.ANOMALY_N_SIGMA)) {
-      logger.debug({ gameId, delta, threshold: config.ANOMALY_N_SIGMA * stddev }, 'Аномалия не обнаружена');
+    // Проверяем на аномалию с настройками из БД
+    if (!isAnomaly(delta, stddev, n_sigma, min_delta_threshold)) {
+      logger.debug({ 
+        gameId, 
+        delta, 
+        threshold: n_sigma * stddev, 
+        minThreshold: min_delta_threshold,
+        nSigma: n_sigma 
+      }, 'Аномалия не обнаружена');
       return null;
     }
     
@@ -87,7 +94,7 @@ export function analyzeGameForAnomalies(gameId: number, currentCcu: number): Ano
       delta,
       mean,
       stddev,
-      threshold: config.ANOMALY_N_SIGMA * stddev,
+      threshold: n_sigma * stddev,
       direction: getAnomalyDirection(delta)
     };
     
@@ -97,7 +104,9 @@ export function analyzeGameForAnomalies(gameId: number, currentCcu: number): Ano
       mean, 
       stddev, 
       threshold: anomaly.threshold,
-      direction: anomaly.direction 
+      direction: anomaly.direction,
+      nSigma: n_sigma,
+      minDeltaThreshold: min_delta_threshold
     }, 'Обнаружена аномалия');
     
     return anomaly;
