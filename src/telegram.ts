@@ -2,6 +2,7 @@ import { Telegraf, Markup } from 'telegraf';
 import { config } from './config';
 import { parseNewGames } from './populate';
 import { db, getAnomalySettings, updateAnomalySettings, updateCustomMessage, performDataCleanup } from './db';
+import { getDatabaseStats, clearGames, clearSnapshots, clearAnomalies, selectiveCleanup } from './clear-and-restart';
 import { startCircularParsingForDuration } from './roblox-parser';
 import { sendTestNotification } from './anomaly-notifier';
 import * as fs from 'fs';
@@ -187,6 +188,42 @@ export class TelegramBot {
     this.bot.action('cancel_game_parsing', (ctx) => {
       console.log('🛑 cancel_game_parsing action triggered');
       this.handleCancelGameParsing(ctx);
+    });
+    this.bot.action('db_cleanup_menu', (ctx) => {
+      console.log('🗑️ db_cleanup_menu action triggered');
+      this.handleDatabaseCleanupMenu(ctx);
+    });
+    this.bot.action('clear_games', (ctx) => {
+      console.log('🎮 clear_games action triggered');
+      this.handleClearGames(ctx);
+    });
+    this.bot.action('clear_snapshots', (ctx) => {
+      console.log('📸 clear_snapshots action triggered');
+      this.handleClearSnapshots(ctx);
+    });
+    this.bot.action('clear_anomalies', (ctx) => {
+      console.log('🚨 clear_anomalies action triggered');
+      this.handleClearAnomalies(ctx);
+    });
+    this.bot.action('clear_all_data', (ctx) => {
+      console.log('🗑️ clear_all_data action triggered');
+      this.handleClearAllData(ctx);
+    });
+    this.bot.action('confirm_clear_games', (ctx) => {
+      console.log('✅ confirm_clear_games action triggered');
+      this.handleConfirmClearGames(ctx);
+    });
+    this.bot.action('confirm_clear_snapshots', (ctx) => {
+      console.log('✅ confirm_clear_snapshots action triggered');
+      this.handleConfirmClearSnapshots(ctx);
+    });
+    this.bot.action('confirm_clear_anomalies', (ctx) => {
+      console.log('✅ confirm_clear_anomalies action triggered');
+      this.handleConfirmClearAnomalies(ctx);
+    });
+    this.bot.action('confirm_clear_all', (ctx) => {
+      console.log('✅ confirm_clear_all action triggered');
+      this.handleConfirmClearAll(ctx);
     });
 
     // Обработка текстовых сообщений для настроек и постоянной клавиатуры
@@ -1256,8 +1293,8 @@ export class TelegramBot {
         'Выберите действие:',
         { reply_markup: Markup.inlineKeyboard([
           [Markup.button.callback('📤 Экспорт базы данных', 'export_db')],
-          [Markup.button.callback('🧹 Очистить старые данные', 'cleanup_data')],
-          [Markup.button.callback('📊 Статистика базы данных', 'db_stats')],
+          [Markup.button.callback('📊 Детальная статистика', 'db_stats')],
+          [Markup.button.callback('🗑️ Очистка', 'db_cleanup_menu')],
           [Markup.button.callback('🔙 Назад', 'back_to_main')]
         ]).reply_markup }
       );
@@ -1269,11 +1306,13 @@ export class TelegramBot {
         `• Снапшотов: ${snapshotsCount.count}\n` +
         `• Аномалий: ${anomaliesCount.count}\n` +
         `• Размер: ${dbSizeKB} KB\n\n` +
-        'Для работы с базой данных используйте команды:\n' +
-        '• /export_db - экспорт базы данных\n' +
-        '• /cleanup_data - очистка старых данных\n' +
-        '• /db_stats - детальная статистика',
-        this.getPersistentKeyboard()
+        'Выберите действие:',
+        Markup.inlineKeyboard([
+          [Markup.button.callback('📤 Экспорт базы данных', 'export_db')],
+          [Markup.button.callback('📊 Детальная статистика', 'db_stats')],
+          [Markup.button.callback('🗑️ Очистка', 'db_cleanup_menu')],
+          [Markup.button.callback('🔙 Назад', 'back_to_main')]
+        ])
       );
     }
   }
@@ -1432,6 +1471,292 @@ export class TelegramBot {
       console.log('🤖 Telegram bot stopped');
     } catch (error) {
       console.error('Error stopping Telegram bot:', error);
+    }
+  }
+
+  private async handleDatabaseCleanupMenu(ctx: any) {
+    try {
+      await ctx.answerCbQuery('🗑️ Меню очистки базы данных');
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    // Получаем текущую статистику
+    const stats = getDatabaseStats();
+    
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(
+        '🗑️ Очистка базы данных\n\n' +
+        `📊 Текущее состояние:\n` +
+        `• Игр: ${stats.games}\n` +
+        `• Снапшотов: ${stats.snapshots}\n` +
+        `• Аномалий: ${stats.anomalies}\n` +
+        `• Всего записей: ${stats.total}\n\n` +
+        '⚠️ ВНИМАНИЕ: Очистка необратима!\n' +
+        'Выберите что очистить:',
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('🎮 Очистить игры', 'clear_games')],
+          [Markup.button.callback('📸 Очистить снапшоты', 'clear_snapshots')],
+          [Markup.button.callback('🚨 Очистить аномалии', 'clear_anomalies')],
+          [Markup.button.callback('🗑️ Очистить ВСЁ', 'clear_all_data')],
+          [Markup.button.callback('🧹 Очистить старые данные', 'cleanup_data')],
+          [Markup.button.callback('🔙 Назад к базе данных', 'database_menu')]
+        ]).reply_markup }
+      );
+    } else {
+      await ctx.reply(
+        '🗑️ Очистка базы данных\n\n' +
+        `📊 Текущее состояние:\n` +
+        `• Игр: ${stats.games}\n` +
+        `• Снапшотов: ${stats.snapshots}\n` +
+        `• Аномалий: ${stats.anomalies}\n` +
+        `• Всего записей: ${stats.total}\n\n` +
+        '⚠️ ВНИМАНИЕ: Очистка необратима!',
+        this.getPersistentKeyboard()
+      );
+    }
+  }
+
+  private async handleClearGames(ctx: any) {
+    try {
+      await ctx.answerCbQuery('🎮 Подтверждение очистки игр');
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    const stats = getDatabaseStats();
+    
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(
+        '🎮 Очистка игр\n\n' +
+        `⚠️ ВНИМАНИЕ: Это действие удалит ВСЕ игры (${stats.games} записей)!\n\n` +
+        `📊 Будет удалено:\n` +
+        `• Игр: ${stats.games}\n` +
+        `• Снапшотов: ${stats.snapshots} (из-за каскадного удаления)\n` +
+        `• Аномалий: ${stats.anomalies} (из-за каскадного удаления)\n\n` +
+        `❌ Это действие НЕОБРАТИМО!\n\n` +
+        `Подтвердите удаление:`,
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('✅ ДА, удалить игры', 'confirm_clear_games')],
+          [Markup.button.callback('❌ Отмена', 'db_cleanup_menu')]
+        ]).reply_markup }
+      );
+    }
+  }
+
+  private async handleClearSnapshots(ctx: any) {
+    try {
+      await ctx.answerCbQuery('📸 Подтверждение очистки снапшотов');
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    const stats = getDatabaseStats();
+    
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(
+        '📸 Очистка снапшотов\n\n' +
+        `⚠️ ВНИМАНИЕ: Это действие удалит ВСЕ снапшоты (${stats.snapshots} записей)!\n\n` +
+        `📊 Будет удалено:\n` +
+        `• Снапшотов: ${stats.snapshots}\n\n` +
+        `❌ Это действие НЕОБРАТИМО!\n\n` +
+        `Подтвердите удаление:`,
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('✅ ДА, удалить снапшоты', 'confirm_clear_snapshots')],
+          [Markup.button.callback('❌ Отмена', 'db_cleanup_menu')]
+        ]).reply_markup }
+      );
+    }
+  }
+
+  private async handleClearAnomalies(ctx: any) {
+    try {
+      await ctx.answerCbQuery('🚨 Подтверждение очистки аномалий');
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    const stats = getDatabaseStats();
+    
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(
+        '🚨 Очистка аномалий\n\n' +
+        `⚠️ ВНИМАНИЕ: Это действие удалит ВСЕ аномалии (${stats.anomalies} записей)!\n\n` +
+        `📊 Будет удалено:\n` +
+        `• Аномалий: ${stats.anomalies}\n\n` +
+        `❌ Это действие НЕОБРАТИМО!\n\n` +
+        `Подтвердите удаление:`,
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('✅ ДА, удалить аномалии', 'confirm_clear_anomalies')],
+          [Markup.button.callback('❌ Отмена', 'db_cleanup_menu')]
+        ]).reply_markup }
+      );
+    }
+  }
+
+  private async handleClearAllData(ctx: any) {
+    try {
+      await ctx.answerCbQuery('🗑️ Подтверждение полной очистки');
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    const stats = getDatabaseStats();
+    
+    if (ctx.callbackQuery) {
+      await ctx.editMessageText(
+        '🗑️ ПОЛНАЯ ОЧИСТКА БАЗЫ ДАННЫХ\n\n' +
+        `⚠️ КРИТИЧЕСКОЕ ВНИМАНИЕ: Это действие удалит ВСЕ данные!\n\n` +
+        `📊 Будет удалено:\n` +
+        `• Игр: ${stats.games}\n` +
+        `• Снапшотов: ${stats.snapshots}\n` +
+        `• Аномалий: ${stats.anomalies}\n` +
+        `• Всего записей: ${stats.total}\n\n` +
+        `❌ Это действие НЕОБРАТИМО!\n` +
+        `🔥 База данных будет полностью очищена!\n\n` +
+        `Подтвердите удаление:`,
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('🔥 ДА, удалить ВСЁ', 'confirm_clear_all')],
+          [Markup.button.callback('❌ Отмена', 'db_cleanup_menu')]
+        ]).reply_markup }
+      );
+    }
+  }
+
+  private async handleConfirmClearGames(ctx: any) {
+    try {
+      await ctx.answerCbQuery('🎮 Очистка игр...', { show_alert: false });
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    try {
+      const result = clearGames();
+      
+      await ctx.editMessageText(
+        `✅ Очистка игр завершена!\n\n` +
+        `📊 Результаты:\n` +
+        `• Удалено игр: ${result.deletedCount}\n` +
+        `• Снапшоты и аномалии также удалены (каскадное удаление)\n\n` +
+        `🔄 Для восстановления данных используйте "Парсинг игр"`,
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к очистке', 'db_cleanup_menu')],
+          [Markup.button.callback('🏠 Главное меню', 'back_to_main')]
+        ]).reply_markup }
+      );
+    } catch (error) {
+      console.error('❌ Clear games error:', error);
+      await ctx.editMessageText(
+        '❌ Ошибка при очистке игр. Проверьте логи для подробностей.',
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к очистке', 'db_cleanup_menu')]
+        ]).reply_markup }
+      );
+    }
+  }
+
+  private async handleConfirmClearSnapshots(ctx: any) {
+    try {
+      await ctx.answerCbQuery('📸 Очистка снапшотов...', { show_alert: false });
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    try {
+      const result = clearSnapshots();
+      
+      await ctx.editMessageText(
+        `✅ Очистка снапшотов завершена!\n\n` +
+        `📊 Результаты:\n` +
+        `• Удалено снапшотов: ${result.deletedCount}\n\n` +
+        `🔄 Для восстановления данных запустите "Поиск аномалий"`,
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к очистке', 'db_cleanup_menu')],
+          [Markup.button.callback('🏠 Главное меню', 'back_to_main')]
+        ]).reply_markup }
+      );
+    } catch (error) {
+      console.error('❌ Clear snapshots error:', error);
+      await ctx.editMessageText(
+        '❌ Ошибка при очистке снапшотов. Проверьте логи для подробностей.',
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к очистке', 'db_cleanup_menu')]
+        ]).reply_markup }
+      );
+    }
+  }
+
+  private async handleConfirmClearAnomalies(ctx: any) {
+    try {
+      await ctx.answerCbQuery('🚨 Очистка аномалий...', { show_alert: false });
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    try {
+      const result = clearAnomalies();
+      
+      await ctx.editMessageText(
+        `✅ Очистка аномалий завершена!\n\n` +
+        `📊 Результаты:\n` +
+        `• Удалено аномалий: ${result.deletedCount}\n\n` +
+        `🔄 Новые аномалии будут обнаружены при следующем запуске "Поиск аномалий"`,
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к очистке', 'db_cleanup_menu')],
+          [Markup.button.callback('🏠 Главное меню', 'back_to_main')]
+        ]).reply_markup }
+      );
+    } catch (error) {
+      console.error('❌ Clear anomalies error:', error);
+      await ctx.editMessageText(
+        '❌ Ошибка при очистке аномалий. Проверьте логи для подробностей.',
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к очистке', 'db_cleanup_menu')]
+        ]).reply_markup }
+      );
+    }
+  }
+
+  private async handleConfirmClearAll(ctx: any) {
+    try {
+      await ctx.answerCbQuery('🗑️ Полная очистка...', { show_alert: false });
+    } catch (cbError) {
+      console.log('⚠️ Callback query already answered or expired, continuing...');
+    }
+    
+    try {
+      const beforeStats = getDatabaseStats();
+      
+      // Очищаем все таблицы
+      const gamesResult = clearGames();
+      const snapshotsResult = clearSnapshots();
+      const anomaliesResult = clearAnomalies();
+      
+      const afterStats = getDatabaseStats();
+      
+      await ctx.editMessageText(
+        `✅ Полная очистка базы данных завершена!\n\n` +
+        `📊 Результаты:\n` +
+        `• Удалено игр: ${gamesResult.deletedCount}\n` +
+        `• Удалено снапшотов: ${snapshotsResult.deletedCount}\n` +
+        `• Удалено аномалий: ${anomaliesResult.deletedCount}\n` +
+        `• Всего удалено: ${beforeStats.total - afterStats.total} записей\n\n` +
+        `🔄 Для восстановления данных:\n` +
+        `1. Используйте "Парсинг игр" для загрузки игр\n` +
+        `2. Запустите "Поиск аномалий" для сбора данных`,
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к очистке', 'db_cleanup_menu')],
+          [Markup.button.callback('🏠 Главное меню', 'back_to_main')]
+        ]).reply_markup }
+      );
+    } catch (error) {
+      console.error('❌ Clear all data error:', error);
+      await ctx.editMessageText(
+        '❌ Ошибка при полной очистке базы данных. Проверьте логи для подробностей.',
+        { reply_markup: Markup.inlineKeyboard([
+          [Markup.button.callback('🔙 Назад к очистке', 'db_cleanup_menu')]
+        ]).reply_markup }
+      );
     }
   }
 }

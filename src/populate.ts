@@ -4,15 +4,13 @@ import 'dotenv/config';
 import { config } from './config';
 import { initSchema, upsertGame, upsertGameWithStatus, db } from './db';
 import { fetchGamesByLetter, fetchGamesByLetterPage } from './rotrends';
-import { insertSnapshot } from './db';
 import { closeBrowser } from './browser';
 
 const logger = pino({ level: config.LOG_LEVEL });
 
 // Только кириллический алфавит для парсинга русских игр
 const LETTERS = [
-  // 'а','б','в','г','д','е','ж','з','и','й','к','л','м','н','о','п','р','с','т','у','ф','х','ц','ч','ш','щ','ъ','ы','ь','э','ю','я'
-  'б'
+  'а','б','в','г','д','е','ж','з','и','й','к','л','м','н','о','п','р','с','т','у','ф','х','ц','ч','ш','щ','ъ','ы','ь','э','ю','я'
 ];
 
 async function populateByLetters(): Promise<void> {
@@ -31,11 +29,7 @@ async function populateByLetters(): Promise<void> {
               const gameId = upsertGame({ source_id: g.source_id, title: g.title, url: g.url });
               logger.debug({ gameId, source_id: g.source_id }, 'Upserted game');
               
-              // Если есть CCU, сразу сохраняем снапшот
-              if (g.ccu !== null && g.ccu !== undefined) {
-                insertSnapshot({ game_id: gameId, timestamp: Date.now(), ccu: g.ccu });
-                logger.debug({ gameId, ccu: g.ccu }, 'Snapshot saved');
-              }
+              // Снапшоты создаются только при "Поиск аномалий", не при парсинге игр
             })
           )
         );
@@ -92,10 +86,7 @@ export async function parseNewGames(): Promise<{
                   updatedGames++;
                 }
                 
-                // Если есть CCU, сразу сохраняем снапшот
-                if (g.ccu !== null && g.ccu !== undefined) {
-                  insertSnapshot({ game_id: result.gameId, timestamp: Date.now(), ccu: g.ccu });
-                }
+                // Снапшоты создаются только при "Поиск аномалий", не при парсинге игр
               } catch (e) {
                 errors++;
                 logger.warn({ source_id: g.source_id, err: (e as Error).message }, 'Failed to process game');

@@ -11,7 +11,9 @@
     "bot:prod": "node dist/telegram-bot.js",
     "lint": "eslint \"src/**/*.{ts,tsx}\" --max-warnings=0",
     "format": "prettier --write .",
-    "seed:games": "ts-node src/populate.ts"
+    "seed:games": "ts-node src/populate.ts",
+    "cleanup": "ts-node src/clear-and-restart.ts",
+    "cleanup:prod": "node dist/clear-and-restart.js"
   },
   "keywords": [],
   "author": "",
