@@ -40,6 +40,31 @@ export class TelegramBot {
     
     console.log('🔑 Bot token found:', config.TELEGRAM_BOT_TOKEN.substring(0, 10) + '...');
     this.bot = new Telegraf(config.TELEGRAM_BOT_TOKEN);
+
+    // Middleware: allow-list by user id from env ALLOWED_USER_IDS (comma-separated)
+    const allowedSet = new Set<number>();
+    if (config.ALLOWED_USER_IDS) {
+      for (const raw of config.ALLOWED_USER_IDS.split(',')) {
+        const id = Number(raw.trim());
+        if (!Number.isNaN(id)) allowedSet.add(id);
+      }
+    }
+
+    this.bot.use(async (ctx, next) => {
+      const fromId = ctx.from?.id;
+      if (allowedSet.size === 0) {
+        // No allow-list configured -> allow everyone
+        return next();
+      }
+      if (fromId && allowedSet.has(fromId)) {
+        return next();
+      }
+      try {
+        await ctx.reply('⛔️ Доступ к этому боту ограничен.');
+      } catch {}
+      return;
+    });
+
     this.setupHandlers();
     console.log('✅ TelegramBot instance created');
   }

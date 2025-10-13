@@ -7,6 +7,7 @@ const envSchema = z.object({
   MIN_POINTS_IN_WINDOW: z.coerce.number().int().positive(),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_CHAT_ID: z.string().optional(),
+  ALLOWED_USER_IDS: z.string().optional(),
   CONCURRENCY: z.coerce.number().int().positive(),
   REQUEST_TIMEOUT_MS: z.coerce.number().int().positive(),
   RETRY_ATTEMPTS: z.coerce.number().int().nonnegative(),
@@ -33,6 +34,7 @@ export type AppConfig = z.infer<typeof envSchema> & {
   NODE_ENV: NonNullable<z.infer<typeof envSchema>['NODE_ENV']>;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
+  ALLOWED_USER_IDS?: string;
 };
 
 // Fill defaults for optional fields ensured above
