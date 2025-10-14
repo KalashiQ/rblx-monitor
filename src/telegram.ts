@@ -32,6 +32,21 @@ export class TelegramBot {
     lastGameIndex: -1
   };
 
+  /**
+   * Безопасно обновляет сообщение, проверяя, изменился ли текст
+   */
+  private async safeEditMessage(ctx: any, newText: string, replyMarkup?: any): Promise<void> {
+    if (ctx.callbackQuery) {
+      const currentText = ctx.callbackQuery.message?.text || '';
+      if (currentText !== newText) {
+        await ctx.editMessageText(newText, { reply_markup: replyMarkup });
+      } else {
+        // Если текст не изменился, просто отвечаем на callback query
+        await ctx.answerCbQuery('✅ Информация актуальна', { show_alert: false });
+      }
+    }
+  }
+
   constructor() {
     console.log('🤖 Creating TelegramBot instance...');
     if (!config.TELEGRAM_BOT_TOKEN) {
@@ -1308,20 +1323,23 @@ export class TelegramBot {
     const dbSizeKB = Math.round(dbSize / 1024);
     
     if (ctx.callbackQuery) {
-      await ctx.editMessageText(
-        '🗄️ База данных\n\n' +
+      const menuText = '🗄️ База данных\n\n' +
         `📊 Статистика:\n` +
         `• Игр: ${gamesCount.count}\n` +
         `• Снапшотов: ${snapshotsCount.count}\n` +
         `• Аномалий: ${anomaliesCount.count}\n` +
         `• Размер: ${dbSizeKB} KB\n\n` +
-        'Выберите действие:',
-        { reply_markup: Markup.inlineKeyboard([
+        'Выберите действие:';
+      
+      await this.safeEditMessage(
+        ctx,
+        menuText,
+        Markup.inlineKeyboard([
           [Markup.button.callback('📤 Экспорт базы данных', 'export_db')],
           [Markup.button.callback('📊 Детальная статистика', 'db_stats')],
           [Markup.button.callback('🗑️ Очистка', 'db_cleanup_menu')],
           [Markup.button.callback('🔙 Назад', 'back_to_main')]
-        ]).reply_markup }
+        ]).reply_markup
       );
     } else {
       await ctx.reply(
@@ -1399,12 +1417,13 @@ export class TelegramBot {
         `💾 Размер базы данных: ${dbSizeKB} KB (${dbSizeMB} MB)`;
       
       if (ctx.callbackQuery) {
-        await ctx.editMessageText(
+        await this.safeEditMessage(
+          ctx,
           statsText,
-          { reply_markup: Markup.inlineKeyboard([
+          Markup.inlineKeyboard([
             [Markup.button.callback('🔄 Обновить статистику', 'db_stats')],
             [Markup.button.callback('🔙 Назад к базе данных', 'database_menu')]
-          ]).reply_markup }
+          ]).reply_markup
         );
       } else {
         await ctx.reply(

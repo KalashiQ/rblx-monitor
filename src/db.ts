@@ -80,12 +80,31 @@ export function initSchema(): void {
 export function upsertGame(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): number {
   const now = Date.now();
   
-  // Сначала проверяем, существует ли игра
-  const existing = db.prepare('SELECT id FROM games WHERE source_id = ?').get(game.source_id) as {
+  // Сначала проверяем, существует ли игра с таким же title (предотвращаем дубликаты по названию)
+  const existingByTitle = db.prepare('SELECT id, source_id FROM games WHERE title = ?').get(game.title) as {
+    id: number;
+    source_id: string;
+  } | undefined;
+  
+  if (existingByTitle) {
+    // Если найдена игра с таким же названием, обновляем только url (не трогаем source_id)
+    const update = db.prepare(
+      `UPDATE games SET url=@url, updated_at=@updated_at WHERE id=@id`
+    );
+    update.run({
+      id: existingByTitle.id,
+      url: game.url,
+      updated_at: now,
+    });
+    return existingByTitle.id;
+  }
+  
+  // Если не найдена игра с таким же названием, проверяем по source_id
+  const existingBySourceId = db.prepare('SELECT id FROM games WHERE source_id = ?').get(game.source_id) as {
     id: number;
   } | undefined;
   
-  if (existing) {
+  if (existingBySourceId) {
     // Обновляем существующую игру
     const update = db.prepare(
       `UPDATE games SET title=@title, url=@url, updated_at=@updated_at WHERE source_id=@source_id`
@@ -96,7 +115,7 @@ export function upsertGame(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>)
       url: game.url,
       updated_at: now,
     });
-    return existing.id;
+    return existingBySourceId.id;
   } else {
     // Вставляем новую игру
     const insert = db.prepare(
@@ -120,12 +139,31 @@ export function upsertGame(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>)
 export function upsertGameWithStatus(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): { gameId: number; isNew: boolean } {
   const now = Date.now();
   
-  // Сначала проверяем, существует ли игра
-  const existing = db.prepare('SELECT id FROM games WHERE source_id = ?').get(game.source_id) as {
+  // Сначала проверяем, существует ли игра с таким же title (предотвращаем дубликаты по названию)
+  const existingByTitle = db.prepare('SELECT id, source_id FROM games WHERE title = ?').get(game.title) as {
+    id: number;
+    source_id: string;
+  } | undefined;
+  
+  if (existingByTitle) {
+    // Если найдена игра с таким же названием, обновляем только url (не трогаем source_id)
+    const update = db.prepare(
+      `UPDATE games SET url=@url, updated_at=@updated_at WHERE id=@id`
+    );
+    update.run({
+      id: existingByTitle.id,
+      url: game.url,
+      updated_at: now,
+    });
+    return { gameId: existingByTitle.id, isNew: false };
+  }
+  
+  // Если не найдена игра с таким же названием, проверяем по source_id
+  const existingBySourceId = db.prepare('SELECT id FROM games WHERE source_id = ?').get(game.source_id) as {
     id: number;
   } | undefined;
   
-  if (existing) {
+  if (existingBySourceId) {
     // Обновляем существующую игру
     const update = db.prepare(
       `UPDATE games SET title=@title, url=@url, updated_at=@updated_at WHERE source_id=@source_id`
@@ -136,7 +174,7 @@ export function upsertGameWithStatus(game: Omit<Game, 'id' | 'created_at' | 'upd
       url: game.url,
       updated_at: now,
     });
-    return { gameId: existing.id, isNew: false };
+    return { gameId: existingBySourceId.id, isNew: false };
   } else {
     // Вставляем новую игру
     const insert = db.prepare(
@@ -280,6 +318,59 @@ export function performDataCleanup(): {
     snapshotsDeleted: snapshotsResult.deletedCount,
     anomaliesDeleted: anomaliesResult.deletedCount,
     totalDeleted: snapshotsResult.deletedCount + anomaliesResult.deletedCount
+  };
+}
+
+/**
+ * Удаляет дубликаты игр по названию, оставляя только самую новую запись
+ */
+export function removeDuplicateGames(): { 
+  duplicatesRemoved: number; 
+  gamesRemaining: number;
+} {
+  // Находим дубликаты по названию
+  const duplicates = db.prepare(`
+    SELECT title, COUNT(*) as count, GROUP_CONCAT(id) as ids, GROUP_CONCAT(created_at) as created_ats
+    FROM games 
+    GROUP BY title 
+    HAVING COUNT(*) > 1
+  `).all() as Array<{
+    title: string;
+    count: number;
+    ids: string;
+    created_ats: string;
+  }>;
+  
+  let totalRemoved = 0;
+  
+  for (const duplicate of duplicates) {
+    const ids = duplicate.ids.split(',').map(id => parseInt(id));
+    const createdAts = duplicate.created_ats.split(',').map(ts => parseInt(ts));
+    
+    // Находим индекс самой новой записи (с максимальным created_at)
+    const newestIndex = createdAts.indexOf(Math.max(...createdAts));
+    const newestId = ids[newestIndex];
+    
+    // Удаляем все остальные записи
+    const idsToRemove = ids.filter((_, index) => index !== newestIndex);
+    
+    for (const idToRemove of idsToRemove) {
+      // Сначала удаляем связанные снапшоты и аномалии
+      db.prepare('DELETE FROM snapshots WHERE game_id = ?').run(idToRemove);
+      db.prepare('DELETE FROM anomalies WHERE game_id = ?').run(idToRemove);
+      
+      // Затем удаляем саму игру
+      db.prepare('DELETE FROM games WHERE id = ?').run(idToRemove);
+      totalRemoved++;
+    }
+  }
+  
+  // Получаем оставшееся количество игр
+  const remainingCount = db.prepare('SELECT COUNT(*) as count FROM games').get() as { count: number };
+  
+  return {
+    duplicatesRemoved: totalRemoved,
+    gamesRemaining: remainingCount.count
   };
 }
 
