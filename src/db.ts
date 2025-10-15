@@ -145,13 +145,14 @@ export function upsertGame(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>)
   }
 }
 
-export function upsertGameWithStatus(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): { gameId: number; isNew: boolean } {
+export function upsertGameWithStatus(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): { gameId: number; isNew: boolean; skipped: boolean } {
   const now = Date.now();
   
-  // Если уже существует игра с таким же URL — считаем это дубликатом и ничего не записываем
+  // Если уже существует игра с таким же URL — пропускаем её полностью
   const existingByUrl = db.prepare('SELECT id FROM games WHERE url = ?').get(game.url) as { id: number } | undefined;
   if (existingByUrl) {
-    return { gameId: existingByUrl.id, isNew: false };
+    console.log(`[DEBUG] Пропускаем игру "${game.title}" (URL: ${game.url}) - дубликат найден в базе данных (ID: ${existingByUrl.id})`);
+    return { gameId: existingByUrl.id, isNew: false, skipped: true };
   }
 
   // Сначала проверяем, существует ли игра с таким же title (предотвращаем дубликаты по названию)
@@ -170,7 +171,7 @@ export function upsertGameWithStatus(game: Omit<Game, 'id' | 'created_at' | 'upd
       url: game.url,
       updated_at: now,
     });
-    return { gameId: existingByTitle.id, isNew: false };
+    return { gameId: existingByTitle.id, isNew: false, skipped: false };
   }
   
   // Если не найдена игра с таким же названием, проверяем по source_id
@@ -189,7 +190,7 @@ export function upsertGameWithStatus(game: Omit<Game, 'id' | 'created_at' | 'upd
       url: game.url,
       updated_at: now,
     });
-    return { gameId: existingBySourceId.id, isNew: false };
+    return { gameId: existingBySourceId.id, isNew: false, skipped: false };
   } else {
     // Вставляем новую игру
     const insert = db.prepare(
@@ -204,7 +205,7 @@ export function upsertGameWithStatus(game: Omit<Game, 'id' | 'created_at' | 'upd
       updated_at: now,
     });
     if (info.lastInsertRowid && typeof info.lastInsertRowid === 'number') {
-      return { gameId: info.lastInsertRowid, isNew: true };
+      return { gameId: info.lastInsertRowid, isNew: true, skipped: false };
     }
     throw new Error('Failed to insert game');
   }
@@ -319,6 +320,39 @@ export function cleanupOldAnomalies(daysToKeep: number = 30): { deletedCount: nu
 }
 
 /**
+ * Удаляет дубликаты игр по URL, оставляя только самую старую запись
+ */
+export function removeDuplicateGames(): { duplicatesRemoved: number; gamesRemaining: number } {
+  // Находим дубликаты по URL
+  const duplicates = db.prepare(`
+    SELECT url, COUNT(*) as count, MIN(id) as keep_id, GROUP_CONCAT(id) as all_ids
+    FROM games 
+    GROUP BY url 
+    HAVING COUNT(*) > 1
+  `).all() as Array<{ url: string; count: number; keep_id: number; all_ids: string }>;
+  
+  let duplicatesRemoved = 0;
+  
+  for (const duplicate of duplicates) {
+    const idsToDelete = duplicate.all_ids.split(',').map(id => parseInt(id.trim(), 10)).filter(id => id !== duplicate.keep_id);
+    
+    // Удаляем дубликаты, оставляя только самую старую запись
+    for (const idToDelete of idsToDelete) {
+      db.prepare('DELETE FROM games WHERE id = ?').run(idToDelete);
+      duplicatesRemoved++;
+    }
+  }
+  
+  // Получаем количество оставшихся игр
+  const gamesRemaining = db.prepare('SELECT COUNT(*) as count FROM games').get() as { count: number };
+  
+  return {
+    duplicatesRemoved,
+    gamesRemaining: gamesRemaining.count
+  };
+}
+
+/**
  * Выполняет полную очистку старых данных
  */
 export function performDataCleanup(): { 
@@ -335,11 +369,3 @@ export function performDataCleanup(): {
     totalDeleted: snapshotsResult.deletedCount + anomaliesResult.deletedCount
   };
 }
-
-/**
- * Удаляет дубликаты игр по URL, оставляя только самую новую запись,
- * затем включает уникальный индекс по полю url для предотвращения будущих дублей.
- */
-// Функция удаления дублей по URL удалена: уникальный индекс на games.url предотвращает их появление
-
-

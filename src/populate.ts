@@ -51,6 +51,7 @@ export async function parseNewGames(): Promise<{
   totalGames: number;
   newGames: number;
   updatedGames: number;
+  skippedGames: number;
   errors: number;
   realGameCount: number;
 }> {
@@ -59,6 +60,7 @@ export async function parseNewGames(): Promise<{
   let totalGames = 0;
   let newGames = 0;
   let updatedGames = 0;
+  let skippedGames = 0;
   let errors = 0;
   
   const limit = pLimit(config.CONCURRENCY);
@@ -79,11 +81,16 @@ export async function parseNewGames(): Promise<{
               try {
                 const result = upsertGameWithStatus({ source_id: g.source_id, title: g.title, url: g.url });
                 
-                // Правильно считаем новые и обновленные игры
-                if (result.isNew) {
+                // Правильно считаем новые, обновленные и пропущенные игры
+                if (result.skipped) {
+                  skippedGames++;
+                  logger.debug({ source_id: g.source_id, title: g.title, url: g.url }, 'Game skipped due to duplicate URL');
+                } else if (result.isNew) {
                   newGames++;
+                  logger.debug({ source_id: g.source_id, title: g.title, url: g.url }, 'New game added');
                 } else {
                   updatedGames++;
+                  logger.debug({ source_id: g.source_id, title: g.title, url: g.url }, 'Game updated');
                 }
                 
                 // Снапшоты создаются только при "Поиск аномалий", не при парсинге игр
@@ -106,10 +113,23 @@ export async function parseNewGames(): Promise<{
   // Получаем реальное количество игр в базе данных
   const realGameCount = db.prepare('SELECT COUNT(*) as count FROM games').get() as { count: number };
   
+  // Выводим итоговую статистику
+  logger.info({
+    totalGames,
+    newGames,
+    updatedGames,
+    skippedGames,
+    errors,
+    realGameCount: realGameCount.count
+  }, 'Парсинг игр завершен');
+  
+  console.log(`[INFO] Парсинг завершен: ${newGames} новых игр, ${updatedGames} обновленных, ${skippedGames} пропущенных (дубликаты), ${errors} ошибок`);
+  
   return {
     totalGames,
     newGames,
     updatedGames,
+    skippedGames,
     errors,
     realGameCount: realGameCount.count
   };
