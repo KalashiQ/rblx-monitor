@@ -27,6 +27,9 @@ export function initSchema(): void {
     updated_at INTEGER NOT NULL
   );
 
+  -- Гарантия уникальности URL для предотвращения дублей на стадии записи
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_games_url_unique ON games(url);
+
   CREATE TABLE IF NOT EXISTS snapshots (
     id INTEGER PRIMARY KEY,
     game_id INTEGER NOT NULL REFERENCES games(id) ON DELETE CASCADE,
@@ -334,56 +337,9 @@ export function performDataCleanup(): {
 }
 
 /**
- * Удаляет дубликаты игр по названию, оставляя только самую новую запись
+ * Удаляет дубликаты игр по URL, оставляя только самую новую запись,
+ * затем включает уникальный индекс по полю url для предотвращения будущих дублей.
  */
-export function removeDuplicateGames(): { 
-  duplicatesRemoved: number; 
-  gamesRemaining: number;
-} {
-  // Находим дубликаты по названию
-  const duplicates = db.prepare(`
-    SELECT title, COUNT(*) as count, GROUP_CONCAT(id) as ids, GROUP_CONCAT(created_at) as created_ats
-    FROM games 
-    GROUP BY title 
-    HAVING COUNT(*) > 1
-  `).all() as Array<{
-    title: string;
-    count: number;
-    ids: string;
-    created_ats: string;
-  }>;
-  
-  let totalRemoved = 0;
-  
-  for (const duplicate of duplicates) {
-    const ids = duplicate.ids.split(',').map(id => parseInt(id));
-    const createdAts = duplicate.created_ats.split(',').map(ts => parseInt(ts));
-    
-    // Находим индекс самой новой записи (с максимальным created_at)
-    const newestIndex = createdAts.indexOf(Math.max(...createdAts));
-    const newestId = ids[newestIndex];
-    
-    // Удаляем все остальные записи
-    const idsToRemove = ids.filter((_, index) => index !== newestIndex);
-    
-    for (const idToRemove of idsToRemove) {
-      // Сначала удаляем связанные снапшоты и аномалии
-      db.prepare('DELETE FROM snapshots WHERE game_id = ?').run(idToRemove);
-      db.prepare('DELETE FROM anomalies WHERE game_id = ?').run(idToRemove);
-      
-      // Затем удаляем саму игру
-      db.prepare('DELETE FROM games WHERE id = ?').run(idToRemove);
-      totalRemoved++;
-    }
-  }
-  
-  // Получаем оставшееся количество игр
-  const remainingCount = db.prepare('SELECT COUNT(*) as count FROM games').get() as { count: number };
-  
-  return {
-    duplicatesRemoved: totalRemoved,
-    gamesRemaining: remainingCount.count
-  };
-}
+// Функция удаления дублей по URL удалена: уникальный индекс на games.url предотвращает их появление
 
 
