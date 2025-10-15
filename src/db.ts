@@ -80,6 +80,12 @@ export function initSchema(): void {
 export function upsertGame(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): number {
   const now = Date.now();
   
+  // Если уже существует игра с таким же URL — считаем это дубликатом и ничего не записываем
+  const existingByUrl = db.prepare('SELECT id FROM games WHERE url = ?').get(game.url) as { id: number } | undefined;
+  if (existingByUrl) {
+    return existingByUrl.id;
+  }
+
   // Сначала проверяем, существует ли игра с таким же title (предотвращаем дубликаты по названию)
   const existingByTitle = db.prepare('SELECT id, source_id FROM games WHERE title = ?').get(game.title) as {
     id: number;
@@ -139,6 +145,12 @@ export function upsertGame(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>)
 export function upsertGameWithStatus(game: Omit<Game, 'id' | 'created_at' | 'updated_at'>): { gameId: number; isNew: boolean } {
   const now = Date.now();
   
+  // Если уже существует игра с таким же URL — считаем это дубликатом и ничего не записываем
+  const existingByUrl = db.prepare('SELECT id FROM games WHERE url = ?').get(game.url) as { id: number } | undefined;
+  if (existingByUrl) {
+    return { gameId: existingByUrl.id, isNew: false };
+  }
+
   // Сначала проверяем, существует ли игра с таким же title (предотвращаем дубликаты по названию)
   const existingByTitle = db.prepare('SELECT id, source_id FROM games WHERE title = ?').get(game.title) as {
     id: number;
